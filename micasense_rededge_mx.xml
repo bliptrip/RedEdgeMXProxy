@@ -1,0 +1,184 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<mavlinkcamera>
+    <definition version="7">
+        <model>RedEdge MX</model>
+        <vendor>MicaSense</vendor>
+    </definition>
+    <parameters>
+        <!-- control = 0 tells us this should not create an automatic UI control -->
+        <parameter name="CAM_EXPOSURE_MANUAL" type="bool", default="0">
+            <description>Enable/Disable Manual Camera Exposure</description>
+            <options>
+                <option name="Disable", value="0">
+                    <exclusions>
+                        <exclude>CAM_EXPOSURE1</exclude>
+                        <exclude>CAM_EXPOSURE2</exclude>
+                        <exclude>CAM_EXPOSURE3</exclude>
+                        <exclude>CAM_EXPOSURE4</exclude>
+                        <exclude>CAM_EXPOSURE5</exclude>
+                        <exclude>CAM_EXPOSURE_GAIN1</exclude>
+                        <exclude>CAM_EXPOSURE_GAIN2</exclude>
+                        <exclude>CAM_EXPOSURE_GAIN3</exclude>
+                        <exclude>CAM_EXPOSURE_GAIN4</exclude>
+                        <exclude>CAM_EXPOSURE_GAIN5</exclude>
+                    </exclusions>
+                </option>
+                <option name="Enable", value="1" />
+            </options>
+        </parameter>
+        <parameter name="CAM_DETECT_PANEL" type="bool" default="False">
+            <description>Autodetect the calibration panel in the captured image.</description>
+        </parameter>
+        <parameter name="CAM_EXPOSURE1" type="float" default="1.0">
+            <description>Camera 1 Manual Exposure (ms)</description>
+        </parameter>
+        <parameter name="CAM_EXPOSURE2" type="float" default="1.0">
+
+        </parameter>
+        <parameter name="CAM_EXPOSURE3" type="float" default="1.0">
+
+        </parameter>
+        <parameter name="CAM_EXPOSURE4" type="float" default="1.0">
+
+        </parameter>
+        <parameter name="CAM_EXPOSURE5" type="float" default="1.0">
+
+        </parameter>
+        <parameter name="CAM_EXPOSURE_GAIN1" type="int8" default="1">
+            <description>Camera 1 Manual Exposure Gain</description>
+            <options>
+                <option name="1" value="1" />
+                <option name="2" value="2" />
+                <option name="4" value="4" />
+                <option name="8" value="8" />
+            </options>
+        </parameter>
+        <parameter name="CAM_EXPOSURE_GAIN2" type="int8" default="1">
+            <description>Camera 2 Manual Exposure Gain</description>
+            <options>
+                <option name="1" value="1" />
+                <option name="2" value="2" />
+                <option name="4" value="4" />
+                <option name="8" value="8" />
+            </options>
+        </parameter>
+        <parameter name="CAM_EXPOSURE_GAIN3" type="int8" default="1">
+            <description>Camera 3 Manual Exposure Gain</description>
+            <options>
+                <option name="1" value="1" />
+                <option name="2" value="2" />
+                <option name="4" value="4" />
+                <option name="8" value="8" />
+            </options>
+        </parameter>
+        <parameter name="CAM_EXPOSURE_GAIN4" type="int8" default="1">
+            <description>Camera 4 Manual Exposure Gain</description>
+            <options>
+                <option name="1" value="1" />
+                <option name="2" value="2" />
+                <option name="4" value="4" />
+                <option name="8" value="8" />
+            </options>
+        </parameter>
+        <parameter name="CAM_EXPOSURE_GAIN5" type="int8" default="1">
+            <description>Camera 5 Manual Exposure Gain</description>
+            <options>
+                <option name="1" value="1" />
+                <option name="2" value="2" />
+                <option name="4" value="4" />
+                <option name="8" value="8" />
+            </options>
+        </parameter>
+        <parameter name="CAM_ORIENTATION_AC_PHI" type="float" default="0.0">
+            <description>Aircraft Phi (Roll) Orientation in Radians</description>
+        </parameter>
+        <parameter name="CAM_ORIENTATION_AC_THETA" type="float" default="0.0">
+            <description>Aircraft Theta (Pitch) Orientation in Radians</description>
+        </parameter>
+        <parameter name="CAM_ORIENTATION_AC_PSI" type="float" default="0.0">
+            <description>Aircraft Psi (Yaw) Orientation in Radians</description>
+        </parameter>
+        <parameter name="CAM_ORIENTATION_CAM_PHI" type="float" default="0.0">
+            <description>Camera Phi (Roll) Orientation in Radians</description>
+        </parameter>
+        <parameter name="CAM_ORIENTATION_CAM_THETA" type="float" default="0.0">
+            <description>Camera Theta (Pitch) Orientation in Radians</description>
+        </parameter>
+        <parameter name="CAM_ORIENTATION_CAM_PSI" type="float" default="0.0">
+            <description>Camera Psi (Yaw) Orientation in Radians</description>
+        </parameter>
+        <parameter name="CAM_ALTITUDE" type="float", default="0.0">
+            <description>Aircraft altitude AGL (meters)</description>
+        </parameter>
+        <parameter name="CAM_ALONG_TRACK_OVERLAP" type="float", default="70.0">
+            <description>Desired along track overlap percentage</description>
+        </parameter>
+        <parameter name="CAM_CROSS_TRACK_OVERLAP" type="float", default="70.0">
+            <description>Desired cross track overlap percentage</description>
+        </parameter>
+        <parameter name="CAM_AUTO_CAPTURE_MODE" type="uint8", default="0">
+            <description>Auto capture mode.</description>
+            <options>
+                <option name="disabled", value="0" />
+                <option name="overlap", value="1" />
+                <option name="timer", value="2" />
+                <option name="ext", value="3" />
+            </options>
+        </parameter>
+        <parameter name="CAM_AUTO_CAPTURE_TIMER" type="uint32", default="2">
+            <description>When in timer auto capture mode, the time in seconds between captures.</description>
+        </parameter>
+        <parameter name="CAM_AUTO_CAPTURE_EXT_TRIGGER_MODE" type="uint8", default="0">
+            <description>When in ext auto capture mode, the trigger mode for external camera capture triggers.</description>
+            <options>
+                <option name="rising", value="0" />
+                <option name="falling", value="1" />
+                <option name="longpwm", value="2" />
+                <option name="shortpwm", value="3" />
+            </options>
+        </parameter>
+        <parameter name="CAM_AUTO_CAPTURE_EXT_TRIGGER_THRESHOLD" type="uint32", default="2">
+            <description>When in timer auto capture mode, the time in seconds between captures.</description>
+        </parameter>
+        <parameter name="CAM_RAW_FORMAT" type="uint8", default="0">
+            <description>When capturing images in RAW, the desired mode to output them as.</description>
+            <options>
+                <option name="DNG" value="0" />
+                <option name="TIFF" value="1" />
+            </options>
+        </parameter>
+        <parameter name="CAM_AGC_MIN_MEAN" type="float", default="0.0">
+            <description>Sets the minimum normalized mean value for each image during Automatic Gain Control (AGC).  Valid values are from 0.0 to 1.0, inclusive.</description>
+        </parameter>
+    </parameters>
+    <localization>
+        <!-- If no appropriate locale is found, the original (above) will be used -->
+        <!-- At runtime, the code will go through every "description" and "option name" looking for "original" and replace it with "translated" -->
+        <locale name="de_DE">
+            <strings original="Camera Mode" translated="Kamera Modus" />
+            <strings original="Photo" translated="Foto" />
+            <strings original="White Balance Mode" translated="Weißabgleich Modus" />
+            <strings original="Incandescent" translated="Glühlampen" />
+            <strings original="Sunset" translated="Sonnenuntergang" />
+            <strings original="Sunny" translated="Sonnig" />
+            <strings original="Cloudy" translated="Bewölkt" />
+            <strings original="Fluorescent" translated="Fluoreszierende" />
+            <strings original="Lock" translated="Sperre" />
+            <strings original="Exposure Mode" translated="Belichtungsmodus" />
+            <strings original="Manual" translated="Manuell" />
+            <strings original="Shutter Speed" translated="Verschlusszeit" />
+            <strings original="Exposure Compensation" translated="Belichtungskorrektur" />
+            <strings original="Video Resolution" translated="Videoauflösung" />
+            <strings original="Average" translated="Durchschnitt" />
+            <strings original="Center" translated="Zentrum" />
+            <strings original="Color Mode" translated="Farbmodus" />
+            <strings original="Neutral" translated="Neutral" />
+            <strings original="Enhanced" translated="Verbessert" />
+            <strings original="Night" translated="Nacht" />
+            <strings original="Unprocessed" translated="Unverarbeitete" />
+            <strings original="Image Format" translated="Bildformat" />
+            <strings original="Image Quality" translated="Bildqualität" />
+            <strings original="High" translated="Hoch" />
+        </locale>
+    </localization>
+</mavlinkcamera>
