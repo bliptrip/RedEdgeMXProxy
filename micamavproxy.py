@@ -18,6 +18,7 @@ Runs a mavlink proxy translator/proxy between the Micasense RedEdge HTTPApi and 
 #Camera PARAM_ACK values: https://mavlink.io/en/messages/common.html#PARAM_ACK
 
 from concurrent.futures import *
+import ffmpeg
 from __future__ import print_function
 import json
 from mavutil.mavlink import *
@@ -25,6 +26,7 @@ from optparse import OptionParser
 from pymavlink import mavutil, mavparm
 import requests
 import signal
+from socket import *
 import struct
 import sys
 from threading import Timer
@@ -108,7 +110,7 @@ class RedEdgeAPISession():
         return
 
     def get_capabilities(self):
-        return struct.pack('<I', CAMERA_CAP_FLAGS_CAPTURE_IMAGE | CAMERA_CAP_FLAGS_HAS_IMAGE_SURVEY_MODE)
+        return struct.pack('<I', CAMERA_CAP_FLAGS_CAPTURE_IMAGE | CAMERA_CAP_FLAGS_HAS_IMAGE_SURVEY_MODE | CAMERA_CAP_FLAGS_HAS_VIDEO_STREAM )
 
     def get_network_status(self, callback):
         self.session.request('get', url="http://%s/networkstatus" % self.ip, hooks={'response': [callback]})
@@ -489,6 +491,50 @@ class MavCamParams():
         self.params["CAM_AGC_MIN_MEAN"]['attrib']['value'] = value
 
 
+    @property
+    def _GCS_STREAM_PORT_(self):
+        return(self.params["GCS_STREAM_PORT"]['attrib']['value'])
+
+    @_GCS_STREAM_PORT_.setter
+    def _GCS_STREAM_PORT_(self, value):
+        self.params["GCS_STREAM_PORT"]['attrib']['value'] = value
+
+
+    @property
+    def _GCS_STREAM_IP3_(self):
+        return(self.params["GCS_STREAM_IP3"]['attrib']['value'])
+
+    @_GCS_STREAM_IP3_.setter
+    def _GCS_STREAM_IP3_(self, value):
+        self.params["GCS_STREAM_IP3"]['attrib']['value'] = value
+
+
+    @property
+    def _GCS_STREAM_IP2_(self):
+        return(self.params["GCS_STREAM_IP2"]['attrib']['value'])
+
+    @_GCS_STREAM_IP2_.setter
+    def _GCS_STREAM_IP2_(self, value):
+        self.params["GCS_STREAM_IP2"]['attrib']['value'] = value
+
+
+    @property
+    def _GCS_STREAM_IP1_(self):
+        return(self.params["GCS_STREAM_IP1"]['attrib']['value'])
+
+    @_GCS_STREAM_IP1_.setter
+    def _GCS_STREAM_IP1_(self, value):
+        self.params["GCS_STREAM_IP1"]['attrib']['value'] = value
+
+
+
+    @property
+    def _GCS_STREAM_IP0_(self):
+        return(self.params["GCS_STREAM_IP0"]['attrib']['value'])
+
+    @_GCS_STREAM_IP0_.setter
+    def _GCS_STREAM_IP0_(self, value):
+        self.params["GCS_STREAM_IP0"]['attrib']['value'] = value
 
 
 class MavLink:
@@ -504,6 +550,7 @@ class MavLink:
         self.link_add(descriptor)
         self.pool               = ThreadPoolExecutor(max_workers=max_workers)
         self.mav_cam_params     = MavCamParams(camera_defs)
+        self.stream_socket      = socket(AF_INET, SOCK_DGRAM)
 
     def set_mav_version(self, mav10, mav20):
         '''Set the Mavlink version based on commandline options'''
@@ -615,6 +662,8 @@ class MavLink:
             decoded_message_dict = self.mav_decode(m, master)
             #If the target_system and target_component are embedded in a message, then check that they are valid for this component
             if ('target_system' in decoded_message_dict) and ('target_component' in decoded_message_dict):
+                target_system       = decoded_message_dict['target_system']
+                target_component    = decoded_message_dict['target_component']
                 if (target_system == self.source_system) and (target_component == self.source_component):
                     self.pool.submit(getattr(self, mav_cam_input_messages[mtype]), m, master, decoded_message_dict)
             else:
@@ -834,9 +883,9 @@ class MavLink:
                 result = MAV_RESULT_FAILED
             else:
                 #Stop any previous timers and start a new one
-                if( self.camera_interval_timer ):
+                if( self.cam_interval_timer ):
                     self.cam_interval_timer.stop()
-                    self.camera_interval_timer = None
+                    self.cam_interval_timer = None
                 self.cam_interval_timer = CameraIntervalTimer(interval, self.mav_cmd_image_capture, m, master, decoded_message_dict)
                 if self.cam_interval_timer is None:
                     result = MAV_RESULT_FAILED
@@ -868,7 +917,20 @@ class MavLink:
         return(result)
 
     def mav_cmd_video_start_streaming(self, m, master, decoded_message_dict):
-        result = MAV_RESULT_UNSUPPORTED
+        result = MAV_RESULT_ACCEPTED
+        if( self.cam_stream_timer ):
+            self.cam_stream_timer.stop()
+            self.cam_stream_timer = None
+        process = (
+                    ffmpeg
+                    .input('pipe:', format='rawvideo', pix_fmt='rgb24', s='{}x{}'.format(width, height))
+                    .output('-', format='h264')
+                    .overwrite_output()
+                    .run_async(pipe_stdin=True, pipe_stdout=True)
+                    )
+        self.cam_stream_timer = CameraIntervalTimer(1, self.mav_stream_capture, m, master, decoded_message_dict, process=process)
+        if self.cam_stream_timer is None:
+            result = MAV_RESULT_FAILED
         return(result)
 
     def mav_cmd_video_stop_streaming(self, m, master, decoded_message_dict):
@@ -887,8 +949,37 @@ class MavLink:
         result = MAV_RESULT_UNSUPPORTED
         return(result)
 
-    def param_ext_ack(self,m,master):
-        return
+    def mav_stream_capture(self, m, master, decoded_message_dict, **kwargs):
+        if ('process' in kwargs) and ('socket' in kwargs):
+            process = kwargs['process']
+            socket =  kwargs['socket']
+
+        def loop_cached_images(files):
+            for cam_id in files:
+                imgf = http_get(self.ip + files[cam_id])
+                process.stdin.write(imgf)
+
+
+
+#while process.poll() is None:
+#   packet = process.stdout.read(packet_size)
+#   try:
+#       udp_socket.send(packet)
+#   except socket.error:
+#       process.stdout.close()
+#       process.wait()
+#       break
+
+        rd = http_post(self.ip, "capture", {'block': True, 'cache_jpeg': 0x1F, 'cache_raw': 0, 'store_capture': False})
+        if rd is not None:
+            if rd['status'] == 'complete':
+                #Now get the capture status to get the file URLs
+                rd = http_get(self.ip, "capture/{0}".format(rd['id']))
+                if rd is not None:
+                    #Send captured message for all JPEG images
+                    loop_captured_images(rd['jpeg_cache_path'])
+
+
 
     def param_ext_request_read(self, m, master, decoded_message_dict):
         if( self.mav_cam_params ):
@@ -926,6 +1017,59 @@ class MavLink:
                                       param_result = param_ack_status)
 
         return
+
+#process1 = (
+#            ffmpeg
+#                .input(in_filename)
+#                    .output('pipe:', format='rawvideo', pix_fmt='rgb24')
+#                        .run_async(pipe_stdout=True)
+#                        )
+#
+#process2 = (
+#            ffmpeg
+#                .input('pipe:', format='rawvideo', pix_fmt='rgb24', s='{}x{}'.format(width, height))
+#                    .output(out_filename, pix_fmt='yuv420p')
+#                        .overwrite_output()
+#                            .run_async(pipe_stdin=True)
+#                            )
+#
+#while True:
+#        in_bytes = process1.stdout.read(width * height * 3)
+#            if not in_bytes:
+#                        break
+#                        in_frame = (
+#                                        np
+#                                                .frombuffer(in_bytes, np.uint8)
+#                                                        .reshape([height, width, 3])
+#                                                            )
+#                            out_frame = in_frame * 0.3
+#                                process2.stdin.write(
+#                                                frame
+#                                                        .astype(np.uint8)
+#                                                                .tobytes()
+#                                                                    )
+#
+#import ffmpeg
+#from socket import *
+#packet_size = 4096
+#
+#process = (
+#           ffmpeg
+#           .input('pipe:', format='rawvideo', pix_fmt='rgb24', s='{}x{}'.format(width, height))
+#           .output('-', format='h264')
+#           .overwrite_output()
+#           .run_async(pipe_stdin=True, pipe_stdout=True)
+#          )
+#
+#while process.poll() is None:
+#   packet = process.stdout.read(packet_size)
+#   try:
+#       udp_socket.send(packet)
+#   except socket.error:
+#       process.stdout.close()
+#       process.wait()
+#       break
+
 
 
 if __name__ == "__main__":
