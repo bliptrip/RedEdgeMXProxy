@@ -47,8 +47,8 @@ def parse_args():
                       help="default serial baud rate", default=57600)
     parser.add_option("--source-system", dest='SOURCE_SYSTEM', type='int',
                       default=1, help='MAVLink camera source system for this vehicle -- Defaults to autopilot vehicle')
-    parser.add_option("--source-component", dest='SOURCE_COMPONENT', type='int',
-                      help='MAVLink source component for this GCS')
+    parser.add_option("--source-component", dest='SOURCE_COMPONENT', type='int', 
+                      default=100, help='MAVLink source component for this GCS')
     parser.add_option("--target-system", dest='TARGET_SYSTEM', type='int',
                       default=0, help='MAVLink target master system')
     parser.add_option("--target-component", dest='TARGET_COMPONENT', type='int',
@@ -140,7 +140,8 @@ class CameraIntervalTimer(object):
         self.is_running = False
 
 class MavCamParams():
-    def __init__(self, camera_defs):
+    def __init__(self, ip, camera_defs):
+        self.ip                 = ip #Camera IP address
         self.params             = {} #Store the camera extra parameters stored in the camera definitions xml file.
         self._model             = ""
         self._vendor            = ""
@@ -166,6 +167,7 @@ class MavCamParams():
                     ptype = p.attrib['type']
                     if( ptype in mav_param_ext_types ):
                         p.attrib['mtype'] = mav_param_ext_types[ptype]
+                        p.attrib['stale'] = True #Mark parameters as initially stale to force them to be read in from the camera
                 self.params[p.tag] = {'attrib':p.attrib, 'property': '_{0}_'.format(p.tag)}
         return
 
@@ -192,12 +194,24 @@ class MavCamParams():
     #Extra parameters getters/setters
     @property
     def _CAM_EXP_MAN_(self):
+        if( self.params["CAM_EXP_MAN"]['attrib']['stale'] == True ):
+            rd = http_get(self.ip, 'exposure')
+            if rd is not None:
+                value = rd['enable_manual_exposure']
+                self.params["CAM_EXP_MAN"]['attrib']['value'] = value
+                self.params["CAM_EXP_MAN"]['attrib']['stale'] = False
         return(self.params["CAM_EXP_MAN"]['attrib']['value'])
 
     @_CAM_EXP_MAN_.setter
     def _CAM_EXP_MAN_(self, value):
-        self.params["CAM_EXP_MAN"]['attrib']['value'] = value
-
+        success = False 
+        rd = http_post(self.ip, 'exposure', {'enable_manual_exposure': value})
+        if rd is not None:
+            rvalue = rd['enable_manual_exposure']
+            if( value == rvalue ):
+                success = True
+                self.params["CAM_EXP_MAN"]['attrib']['value'] = value
+        return(success)
 
     @property
     def _CAM_DET_PAN_(self):
@@ -206,106 +220,133 @@ class MavCamParams():
     @_CAM_DET_PAN_.setter
     def _CAM_DET_PAN_(self, value):
         self.params["CAM_DET_PAN"]['attrib']['value'] = value
+        return(True)
 
+    def _cam_exp_read(self, id):
+        CAM_EXP = 'CAM_EXP{}'.format(id)
+        exposure = 'exposure{}'.format(id)
+        if(self.params[CAM_EXP]['attrib']['stale'] == True):
+            rd = http_get(self.ip, 'exposure')
+            if rd is not None:
+                value = rd[exposure]
+                self.params[CAM_EXP]['attrib']['value'] = value
+                self.params[CAM_EXP]['attrib']['stale'] = False
+        return(self.params[CAM_EXP]['attrib']['value'])
+
+    def _cam_exp_write(self, id, value):
+        CAM_EXP = 'CAM_EXP{}'.format(id)
+        exposure = 'exposure{}'.format(id)
+        success = False
+        rd = http_post(self.ip, 'exposure', {exposure: value})
+        if rd is not None:
+            rvalue = rd[exposure]
+            if( value == rvalue ):
+                success = True
+                self.params[CAM_EXP]['attrib']['value'] = value
+        return(success)
 
     @property
     def _CAM_EXP1_(self):
-        return(self.params["CAM_EXP1"]['attrib']['value'])
+        return(self._cam_exp_read(1))
 
     @_CAM_EXP1_.setter
     def _CAM_EXP1_(self, value):
-        self.params["CAM_EXP1"]['attrib']['value'] = value
-
+        return(self._cam_exp_write(1, value))
 
     @property
     def _CAM_EXP2_(self):
-        return(self.params["CAM_EXP2"]['attrib']['value'])
+        return(self._cam_exp_read(2))
 
     @_CAM_EXP2_.setter
     def _CAM_EXP2_(self, value):
-        self.params["CAM_EXP2"]['attrib']['value'] = value
-
+        return(self._cam_exp_write(2, value))
 
     @property
     def _CAM_EXP3_(self):
-        return(self.params["CAM_EXP3"]['attrib']['value'])
+        return(self._cam_exp_read(3))
 
     @_CAM_EXP3_.setter
     def _CAM_EXP3_(self, value):
-        self.params["CAM_EXP3"]['attrib']['value'] = value
-
+        return(self._cam_exp_write(3, value))
 
     @property
     def _CAM_EXP4_(self):
-        return(self.params["CAM_EXP4"]['attrib']['value'])
+        return(self._cam_exp_read(4))
 
     @_CAM_EXP4_.setter
     def _CAM_EXP4_(self, value):
-        self.params["CAM_EXP4"]['attrib']['value'] = value
-
+        return(self._cam_exp_write(4, value))
 
     @property
     def _CAM_EXP5_(self):
-        return(self.params["CAM_EXP5"]['attrib']['value'])
+        return(self._cam_exp_read(5))
 
     @_CAM_EXP5_.setter
     def _CAM_EXP5_(self, value):
-        self.params["CAM_EXP5"]['attrib']['value'] = value
+        return(self._cam_exp_write(5, value))
 
+    def _cam_gain_read(self, id):
+        CAM_EXP_GAIN = 'CAM_EXP_GAIN{}'.format(id)
+        gain = 'gain{}'.format(id)
+        if(self.params[CAM_EXP_GAIN]['attrib']['stale'] == True):
+            rd = http_get(self.ip, 'exposure')
+            if rd is not None:
+                value = rd[gain]
+                self.params[CAM_EXP_GAIN]['attrib']['value'] = value
+                self.params[CAM_EXP_GAIN]['attrib']['stale'] = False
+        return(self.params[CAM_EXP_GAIN]['attrib']['value'])
+
+    def _cam_gain_write(self, id, value):
+        CAM_EXP_GAIN = 'CAM_EXP_GAIN{}'.format(id)
+        gain = 'gain{}'.format(id)
+        success = False
+        rd = http_post(self.ip, 'exposure', {gain: value})
+        if rd is not None:
+            rvalue = rd[gain]
+            if( value == rvalue ):
+                success = True
+                self.params[CAM_EXP_GAIN]['attrib']['value'] = value
+        return(success)
 
     @property
     def _CAM_EXP_GAIN1_(self):
-        return(self.params["CAM_EXP_GAIN1"]['attrib']['value'])
+        return(self._cam_gain_read(1))
 
     @_CAM_EXP_GAIN1_.setter
     def _CAM_EXP_GAIN1_(self, value):
-        self.params["CAM_EXP_GAIN1"]['attrib']['value'] = value
-
+        return(self._cam_gain_write(1, value))
 
     @property
     def _CAM_EXP_GAIN2_(self):
-        return(self.params["CAM_EXP_GAIN2"]['attrib']['value'])
+        return(self._cam_gain_read(2))
 
     @_CAM_EXP_GAIN2_.setter
     def _CAM_EXP_GAIN2_(self, value):
-        self.params["CAM_EXP_GAIN2"]['attrib']['value'] = value
-
+        return(self._cam_gain_write(2, value))
 
     @property
     def _CAM_EXP_GAIN3_(self):
-        return(self.params["CAM_EXP_GAIN3"]['attrib']['value'])
+        return(self._cam_gain_read(3))
 
     @_CAM_EXP_GAIN3_.setter
     def _CAM_EXP_GAIN3_(self, value):
-        self.params["CAM_EXP_GAIN3"]['attrib']['value'] = value
-
+        return(self._cam_gain_write(3, value))
 
     @property
     def _CAM_EXP_GAIN4_(self):
-        return(self.params["CAM_EXP_GAIN4"]['attrib']['value'])
+        return(self._cam_gain_read(4))
 
     @_CAM_EXP_GAIN4_.setter
     def _CAM_EXP_GAIN4_(self, value):
-        self.params["CAM_EXP_GAIN4"]['attrib']['value'] = value
-
+        return(self._cam_gain_write(4, value))
 
     @property
     def _CAM_EXP_GAIN5_(self):
-        return(self.params["CAM_EXP_GAIN5"]['attrib']['value'])
+        return(self._cam_gain_read(5))
 
     @_CAM_EXP_GAIN5_.setter
     def _CAM_EXP_GAIN5_(self, value):
-        self.params["CAM_EXP_GAIN5"]['attrib']['value'] = value
-
-
-    @property
-    def _CAMP_(self):
-        return(self.params["CAMP"]['attrib']['value'])
-
-    @_CAMP_.setter
-    def _CAMP_(self, value):
-        self.params["CAMP"]['attrib']['value'] = value
-
+        return(self._cam_gain_write(5, value))
 
     @property
     def _CAM_AC_PHI_(self):
@@ -314,7 +355,7 @@ class MavCamParams():
     @_CAM_AC_PHI_.setter
     def _CAM_AC_PHI_(self, value):
         self.params["CAM_AC_PHI"]['attrib']['value'] = value
-
+        return(True)
 
     @property
     def _CAM_AC_THETA_(self):
@@ -323,7 +364,7 @@ class MavCamParams():
     @_CAM_AC_THETA_.setter
     def _CAM_AC_THETA_(self, value):
         self.params["CAM_AC_THETA"]['attrib']['value'] = value
-
+        return(True)
 
     @property
     def _CAM_AC_PSI_(self):
@@ -332,7 +373,7 @@ class MavCamParams():
     @_CAM_AC_PSI_.setter
     def _CAM_AC_PSI_(self, value):
         self.params["CAM_AC_PSI"]['attrib']['value'] = value
-
+        return(True)
 
     @property
     def _CAM_CAM_PHI_(self):
@@ -341,7 +382,7 @@ class MavCamParams():
     @_CAM_CAM_PHI_.setter
     def _CAM_CAM_PHI_(self, value):
         self.params["CAM_CAM_PHI"]['attrib']['value'] = value
-
+        return(True)
 
     @property
     def _CAM_CAM_THETA_(self):
@@ -350,7 +391,7 @@ class MavCamParams():
     @_CAM_CAM_THETA_.setter
     def _CAM_CAM_THETA_(self, value):
         self.params["CAM_CAM_THETA"]['attrib']['value'] = value
-
+        return(True)
 
     @property
     def _CAM_CAM_PSI_(self):
@@ -359,7 +400,7 @@ class MavCamParams():
     @_CAM_CAM_PSI_.setter
     def _CAM_CAM_PSI_(self, value):
         self.params["CAM_CAM_PSI"]['attrib']['value'] = value
-
+        return(True)
 
     @property
     def _CAM_ALT_(self):
@@ -368,7 +409,7 @@ class MavCamParams():
     @_CAM_ALT_.setter
     def _CAM_ALT_(self, value):
         self.params["CAM_ALT"]['attrib']['value'] = value
-
+        return(True)
 
     @property
     def _CAM_A_OVERLAP_(self):
@@ -377,7 +418,7 @@ class MavCamParams():
     @_CAM_A_OVERLAP_.setter
     def _CAM_A_OVERLAP_(self, value):
         self.params["CAM_A_OVERLAP"]['attrib']['value'] = value
-
+        return(True)
 
     @property
     def _CAM_X_OVERLAP_(self):
@@ -386,52 +427,166 @@ class MavCamParams():
     @_CAM_X_OVERLAP_.setter
     def _CAM_X_OVERLAP_(self, value):
         self.params["CAM_X_OVERLAP"]['attrib']['value'] = value
-
+        return(True)
 
     @property
     def _CAM_AUTO_CAP_(self):
+        if(self.params["CAM_AUTO_CAP"]['attrib']['stale'] == True):
+            rd = http_get(self.ip, 'config')
+            if rd is not None:
+                prevalue = rd['auto_cap_mode']
+                if( prevalue == 'disabled' ):
+                    value = 0
+                elif( prevalue == 'overlap' ):
+                    value = 1
+                elif( prevalue == 'timer' ):
+                    value = 2
+                elif( prevalue == 'ext' ):
+                    value = 3
+                else:
+                    value = -1 #invalid
+                self.params["CAM_AUTO_CAP"]['attrib']['value'] = value
+                self.params["CAM_AUTO_CAP"]['attrib']['stale'] = False
         return(self.params["CAM_AUTO_CAP"]['attrib']['value'])
 
     @_CAM_AUTO_CAP_.setter
     def _CAM_AUTO_CAP_(self, value):
-        self.params["CAM_AUTO_CAP"]['attrib']['value'] = value
-
+        success = False
+        if( value == 0 ):
+            postvalue = 'disabled'
+        elif( value == 1 ):
+            postvalue = 'overlap'
+        elif( value == 2 ):
+            postvalue = 'timer'
+        elif( value == 3 ):
+            postvalue = 'ext'
+        else:
+            return(False) #Invalid value
+        rd = http_post(self.ip, 'config', {'auto_cap_mode': postvalue})
+        if rd is not None:
+            rvalue = rd['auto_cap_mode']
+            if( postvalue == rvalue ):
+                success = True
+                self.params[CAM_AUTO_CAP]['attrib']['value'] = postvalue
+        return(success)
 
     @property
     def _CAM_INT_TIMER_(self):
+        if( self.params["CAM_INT_TIMER"]['attrib']['stale'] == True ):
+            rd = http_get(self.ip, 'config')
+            if rd is not None:
+                value = rd['timer_interval']
+                self.params["CAM_INT_TIMER"]['attrib']['value'] = value
+                self.params["CAM_INT_TIMER"]['attrib']['stale'] = False
         return(self.params["CAM_INT_TIMER"]['attrib']['value'])
 
     @_CAM_INT_TIMER_.setter
     def _CAM_INT_TIMER_(self, value):
-        self.params["CAM_INT_TIMER"]['attrib']['value'] = value
-
+        success = False 
+        rd = http_post(self.ip, 'config', {'timer_interval': value})
+        if rd is not None:
+            rvalue = rd['timer_interval']
+            if( value == rvalue ):
+                success = True
+                self.params["CAM_INT_TIMER"]['attrib']['value'] = value
+        return(success)
 
     @property
     def _CAM_EXT_TRIG_MOD_(self):
+        if(self.params["CAM_EXT_TRIG_MOD"]['attrib']['stale'] == True):
+            rd = http_get(self.ip, 'config')
+            if rd is not None:
+                prevalue = rd['timer_interval']
+                if( prevalue == 'rising' ):
+                    value = 0
+                elif( prevalue == 'falling' ):
+                    value = 1
+                elif( prevalue == 'longpwm' ):
+                    value = 2
+                elif( prevalue == 'shortpwm' ):
+                    value = 3
+                else:
+                    value = -1 #invalid
+            if rd is not None:
+                self.params["CAM_EXT_TRIG_MOD"]['attrib']['value'] = value
+                self.params["CAM_EXT_TRIG_MOD"]['attrib']['stale'] = False
         return(self.params["CAM_EXT_TRIG_MOD"]['attrib']['value'])
 
     @_CAM_EXT_TRIG_MOD_.setter
     def _CAM_EXT_TRIG_MOD_(self, value):
-        self.params["CAM_EXT_TRIG_MOD"]['attrib']['value'] = value
-
+        success = False
+        if( value == 0 ):
+            postvalue = 'rising'
+        elif( value == 1 ):
+            postvalue = 'falling'
+        elif( value == 2 ):
+            postvalue = 'longpwm'
+        elif( value == 3 ):
+            postvalue = 'shortpwm'
+        else:
+            return(False) #Invalid value
+        rd = http_post(self.ip, 'config', {'timer_period': postvalue})
+        if rd is not None:
+            rvalue = rd['timer_period']
+            if( postvalue == rvalue ):
+                success = True
+                self.params[CAM_EXT_TRIG_MOD]['attrib']['value'] = postvalue
+        return(success)
 
     @property
     def _CAM_PWM_THR_(self):
+        if( self.params["CAM_PWM_THR"]['attrib']['stale'] == True ):
+            rd = http_get(self.ip, 'config')
+            if rd is not None:
+                value = rd['pwm_trigger_threshold']
+                self.params["CAM_PWM_THR"]['attrib']['value'] = value
+                self.params["CAM_PWM_THR"]['attrib']['stale'] = False
         return(self.params["CAM_PWM_THR"]['attrib']['value'])
 
     @_CAM_PWM_THR_.setter
     def _CAM_PWM_THR_(self, value):
-        self.params["CAM_PWM_THR"]['attrib']['value'] = value
-
+        success = False 
+        rd = http_post(self.ip, 'config', {'pwm_trigger_threshold': value})
+        if rd is not None:
+            rvalue = rd['pwm_trigger_threshold']
+            if( value == rvalue ):
+                success = True
+                self.params["CAM_PWM_THR"]['attrib']['value'] = value
+        return(success)
 
     @property
     def _CAM_RAW_FORMAT_(self):
+        if(self.params["CAM_RAW_FORMAT"]['attrib']['stale'] == True):
+            rd = http_get(self.ip, 'config')
+            if rd is not None:
+                prevalue = rd['raw_format']
+                if( prevalue == 'DNG' ):
+                    value = 0
+                elif( prevalue == 'TIFF' ):
+                    value = 1
+                else:
+                    value = -1 #invalid
+            if rd is not None:
+                self.params["CAM_RAW_FORMAT"]['attrib']['value'] = value
+                self.params["CAM_RAW_FORMAT"]['attrib']['stale'] = False
         return(self.params["CAM_RAW_FORMAT"]['attrib']['value'])
 
     @_CAM_RAW_FORMAT_.setter
     def _CAM_RAW_FORMAT_(self, value):
-        self.params["CAM_RAW_FORMAT"]['attrib']['value'] = value
-
+        success = False
+        if( value == 0 ):
+            postvalue = 'DNG'
+        elif( value == 1 ):
+            postvalue = 'TIFF'
+        else:
+            return(False) #Invalid value
+        rd = http_post(self.ip, 'config', {'raw_format': postvalue})
+        if rd is not None:
+            rvalue = rd['raw_format']
+            if( postvalue == rvalue ):
+                success = True
+                self.params[CAM_RAW_FORMAT]['attrib']['value'] = postvalue
+        return(success)
 
     @property
     def _CAM_AGC_MIN_MEAN_(self):
@@ -440,7 +595,7 @@ class MavCamParams():
     @_CAM_AGC_MIN_MEAN_.setter
     def _CAM_AGC_MIN_MEAN_(self, value):
         self.params["CAM_AGC_MIN_MEAN"]['attrib']['value'] = value
-
+        return(True)
 
     @property
     def _GCS_STREAM_PORT_(self):
@@ -449,7 +604,7 @@ class MavCamParams():
     @_GCS_STREAM_PORT_.setter
     def _GCS_STREAM_PORT_(self, value):
         self.params["GCS_STREAM_PORT"]['attrib']['value'] = value
-
+        return(True)
 
     @property
     def _GCS_STREAM_IP3_(self):
@@ -458,7 +613,7 @@ class MavCamParams():
     @_GCS_STREAM_IP3_.setter
     def _GCS_STREAM_IP3_(self, value):
         self.params["GCS_STREAM_IP3"]['attrib']['value'] = value
-
+        return(True)
 
     @property
     def _GCS_STREAM_IP2_(self):
@@ -467,7 +622,7 @@ class MavCamParams():
     @_GCS_STREAM_IP2_.setter
     def _GCS_STREAM_IP2_(self, value):
         self.params["GCS_STREAM_IP2"]['attrib']['value'] = value
-
+        return(True)
 
     @property
     def _GCS_STREAM_IP1_(self):
@@ -476,8 +631,7 @@ class MavCamParams():
     @_GCS_STREAM_IP1_.setter
     def _GCS_STREAM_IP1_(self, value):
         self.params["GCS_STREAM_IP1"]['attrib']['value'] = value
-
-
+        return(True)
 
     @property
     def _GCS_STREAM_IP0_(self):
@@ -486,6 +640,7 @@ class MavCamParams():
     @_GCS_STREAM_IP0_.setter
     def _GCS_STREAM_IP0_(self, value):
         self.params["GCS_STREAM_IP0"]['attrib']['value'] = value
+        return(True)
 
 
 class MavLink:
@@ -503,7 +658,7 @@ class MavLink:
         self.pool               = ThreadPoolExecutor(max_workers=max_workers)
         self.cam_stream_timer   = None
         self.cam_interval_timer = None
-        self.mav_cam_params     = MavCamParams(camera_defs)
+        self.mav_cam_params     = MavCamParams(ip, camera_defs)
         self.camera_defs        = camera_defs
         self.heartbeat_period   = mavutil.periodic_event(1)
         self.gst_command        = ['gst-launch-1.0', '-v',
