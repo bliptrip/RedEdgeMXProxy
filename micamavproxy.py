@@ -18,7 +18,6 @@ Runs a mavlink proxy translator/proxy between the Micasense RedEdge HTTPApi and 
 #Camera PARAM_ACK values: https://mavlink.io/en/messages/common.html#PARAM_ACK
 
 from concurrent.futures import *
-import ffmpeg
 import glob
 import io
 import json
@@ -27,6 +26,7 @@ from optparse import OptionParser
 import os
 from PIL import Image
 import requests
+import select
 import signal
 import subprocess as sp
 import struct
@@ -83,6 +83,8 @@ def http_post(ip, route, payload):
     try:
         #Insert a timeout, or can hang indefinitely
         r = requests.post("http://{0}/{1}".format(ip,route), data=payload, timeout=5.0)
+    except requests.exceptions.ConnectionError:
+        pass
     except requests.exceptions.Timeout:
         pass
     else:
@@ -145,10 +147,11 @@ class MavCamParams():
         self.params             = {} #Store the camera extra parameters stored in the camera definitions xml file.
         self._model             = ""
         self._vendor            = ""
-        r = requests.get(camera_defs)
-        if(r.status_code == requests.codes.ok):
-            stream = io.BytesIO(r.content)
-        self.cam_defs_tree      = ET.parse(stream) #Parse the mavlink camera definitions xml file to populate a dictionary of parameters that we will track/store
+        #r = requests.get(camera_defs)
+        #if(r.status_code == requests.codes.ok):
+        #    stream = io.BytesIO(r.content)
+        #self.cam_defs_tree      = ET.parse(stream) #Parse the mavlink camera definitions xml file to populate a dictionary of parameters that we will track/store
+        self.cam_defs_tree      = ET.parse(camera_defs) #Parse the mavlink camera definitions xml file to populate a dictionary of parameters that we will track/store
         self.populate_ext_params(self.cam_defs_tree)
 
     def populate_ext_params(self, tree):
@@ -653,7 +656,6 @@ class MavLink:
         self.descriptor         = descriptor 
         self.baudrate           = baudrate
         self.rtscts             = rtscts
-        #self.set_mav_version(mav10, mav20)
         self.link_add(descriptor)
         self.pool               = ThreadPoolExecutor(max_workers=max_workers)
         self.cam_stream_timer   = None
@@ -669,6 +671,22 @@ class MavLink:
                                    '!', 'rtpjpegpay',
                                    '!', 'udpsink', 'host={}'.format(stream_ip), 'port={}'.format(stream_port)]
         self.mav_cmd_video_start_streaming(None, self.master, {})
+
+    def read(self, timeout):
+        master = self.master
+        rin = []
+        if master.fd is not None and not master.portdead:
+            rin.append(master.fd)
+        if rin != []:
+            try:
+                (rin, win, xin) = select.select(rin, [], [], timeout)
+            except select.error:
+                rin = []
+                pass 
+        for fd in rin:
+            if fd == master.fd:
+                process_master(master)
+        return
 
     def send_heartbeat(self):
         if self.master.mavlink10():
@@ -772,6 +790,7 @@ class MavLink:
             
         mtype = m.get_type()
         if( mtype in mav_cam_input_messages ):
+            print('master_msg_handling(): Received mavlink message with source system id {} and source component {}, type: {}'.format(m.get_srcSystem(), m.get_srcComponent(), mtype)) 
             decoded_message_dict = self.mav_decode(m, master)
             #If the target_system and target_component are embedded in a message, then check that they are valid for this component
             if ('target_system' in decoded_message_dict) and ('target_component' in decoded_message_dict):
@@ -785,7 +804,6 @@ class MavLink:
 
     def master_callback(self, m, master):
         '''process mavlink message m on master, sending any messages to recipients'''
-
         # see if it is handled by a specialised sysid connection
         sysid = m.get_srcSystem()
         mtype = m.get_type()
@@ -1133,6 +1151,24 @@ def set_mav_version(mav10, mav20):
         os.environ['MAVLINK20'] = '1'
         mavversion = "2"
 
+def process_master(m):
+    '''process packets from the MAVLink master'''
+    try:
+        s = m.recv(16*1024)
+    except Exception:
+        time.sleep(0.1)
+        return
+    # prevent a dead serial port from causing the CPU to spin. The user hitting enter will
+    # cause it to try and reconnect
+    if len(s) == 0:
+        time.sleep(0.1)
+        return
+
+    msgs = m.mav.parse_buffer(s)
+    if msgs:
+        for msg in msgs:
+            if getattr(m, '_timestamp', None) is None:
+                m.post_message(msg)
 
 def main():
     global mav_component_ids
@@ -1246,12 +1282,16 @@ def main():
         source_component = opts.SOURCE_COMPONENT
     mavl = MavLink(opts.ip, opts.mav10, opts.mav20, opts.SOURCE_SYSTEM, source_component, opts.TARGET_SYSTEM, opts.TARGET_COMPONENT, opts.rtscts, opts.baudrate, descriptor, opts.stream_ip, opts.stream_port, camera_defs=opts.camera_defs)
 
+    #Cleanup
+    #for master in mpstate.mav_master:
+    #    if master.fd is None:
+    #        if master.port.inWaiting() > 0:
+    #            process_master(master)
+
     #Main Loop
     while exit == False:
         mavl.heartbeat_trigger()
-        sleep(0.1)
-
-    #Cleanup
+        mavl.read(timeout=1.0)
 
 if __name__ == "__main__":
     main()
