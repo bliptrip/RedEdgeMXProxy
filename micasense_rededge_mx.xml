@@ -116,7 +116,7 @@
         <parameter name="CAM_X_OVERLAP" type="float" default="70.0">
             <description>Desired cross track overlap percentage when capturing in 'overlap' autocapture mode.</description>
         </parameter>
-        <parameter name="CAM_AUTO_CAP" type="uint8" default="0">
+        <parameter name="CAM_AUTO_CAP" type="int8" default="0">
             <description>Auto capture mode.</description>
             <options>
                 <option name="disabled" value="0" />
