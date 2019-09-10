@@ -113,6 +113,36 @@ def http_get(ip, route):
     return(rd)
 
 
+def param_encode(value, param_type, as_byte_array=False):
+    if( as_byte_array == True ):
+        if( param_type == mavutil.mavlink.MAV_PARAM_EXT_TYPE_UINT8 ):
+            rvalue = struct.pack('<B', value)
+        if( param_type == mavutil.mavlink.MAV_PARAM_EXT_TYPE_INT8 ):
+            rvalue = struct.pack('<b', value)
+        if( param_type == mavutil.mavlink.MAV_PARAM_EXT_TYPE_UINT16 ):
+            rvalue = struct.pack('<H', value)
+        if( param_type == mavutil.mavlink.MAV_PARAM_EXT_TYPE_INT16 ):
+            rvalue = struct.pack('<h', value)
+        if( param_type == mavutil.mavlink.MAV_PARAM_EXT_TYPE_UINT32 ):
+            rvalue = struct.pack('<I', value)
+        if( param_type == mavutil.mavlink.MAV_PARAM_EXT_TYPE_INT32 ):
+            rvalue = struct.pack('<i', value)
+        if( param_type == mavutil.mavlink.MAV_PARAM_EXT_TYPE_UINT64 ):
+            rvalue = struct.pack('<Q', value)
+        if( param_type == mavutil.mavlink.MAV_PARAM_EXT_TYPE_INT64 ):
+            rvalue = struct.pack('<q', value)
+        if( param_type == mavutil.mavlink.MAV_PARAM_EXT_TYPE_REAL32 ):
+            rvalue = struct.pack('<f', value)
+        if( param_type == mavutil.mavlink.MAV_PARAM_EXT_TYPE_REAL64 ):
+            rvalue = struct.pack('<d', value)
+        if( param_type == mavutil.mavlink.MAV_PARAM_EXT_TYPE_CUSTOM ):
+            rvalue = 0 #Unsupported as of now with this setup
+    else:
+        rvalue = str(value)
+    rvalue = struct.pack('<128s', rvalue)
+    return(rvalue)
+
+
 class CameraIntervalTimer(object):
     def __init__(self, interval, function, count, *args, **kwargs):
         self._timer     = None
@@ -1134,8 +1164,10 @@ class MavLink:
             print(param)
             if( param in self.mav_cam_params.keys() ):
                 value = self.mav_cam_params[param]
+                param_type = self.mav_cam_params.type(param)
+                param_value = param_encode(value, param_type)
                 master.mav.param_ext_value_send(param_id = param.encode('utf-8'),
-                                                param_value = str(value).encode('utf-8'),
+                                                param_value = param_value,
                                                 param_type = self.mav_cam_params.type(param),
                                                 param_count = 1,
                                                 param_index = 0)
@@ -1262,18 +1294,18 @@ def main():
                                     }
 
     mav_param_ext_types = {
-                        "bool": {'type': mavutil.mavlink.MAV_PARAM_EXT_TYPE_UINT8, 'default': False},
-                        "uint8": {'type': mavutil.mavlink.MAV_PARAM_EXT_TYPE_UINT8, 'default': 0},
-                        "int8": {'type': mavutil.mavlink.MAV_PARAM_EXT_TYPE_INT8, 'default': 0},
-                        "uint16": {'type': mavutil.mavlink.MAV_PARAM_EXT_TYPE_UINT16, 'default': 0},
-                        "int16": {'type': mavutil.mavlink.MAV_PARAM_EXT_TYPE_INT16, 'default': 0},
-                        "uint32": {'type': mavutil.mavlink.MAV_PARAM_EXT_TYPE_UINT32, 'default': 0},
-                        "int32": {'type': mavutil.mavlink.MAV_PARAM_EXT_TYPE_INT32, 'default': 0},
-                        "uint64": {'type': mavutil.mavlink.MAV_PARAM_EXT_TYPE_UINT64, 'default': 0},
-                        "int64": {'type': mavutil.mavlink.MAV_PARAM_EXT_TYPE_INT64, 'default': 0},
-                        "float": {'type': mavutil.mavlink.MAV_PARAM_EXT_TYPE_REAL32, 'default': 0.0},
-                        "double": {'type': mavutil.mavlink.MAV_PARAM_EXT_TYPE_REAL64, 'default': 0.0},
-                        "custom": {'type': mavutil.mavlink.MAV_PARAM_EXT_TYPE_CUSTOM, 'default': None }
+                        "bool": {'type':    mavutil.mavlink.MAV_PARAM_EXT_TYPE_UINT8, 'default': False},
+                        "uint8": {'type':   mavutil.mavlink.MAV_PARAM_EXT_TYPE_UINT8, 'default': 0},
+                        "int8": {'type':    mavutil.mavlink.MAV_PARAM_EXT_TYPE_INT8, 'default': 0},
+                        "uint16": {'type':  mavutil.mavlink.MAV_PARAM_EXT_TYPE_UINT16, 'default': 0},
+                        "int16": {'type':   mavutil.mavlink.MAV_PARAM_EXT_TYPE_INT16, 'default': 0},
+                        "uint32": {'type':  mavutil.mavlink.MAV_PARAM_EXT_TYPE_UINT32, 'default': 0},
+                        "int32": {'type':   mavutil.mavlink.MAV_PARAM_EXT_TYPE_INT32, 'default': 0},
+                        "uint64": {'type':  mavutil.mavlink.MAV_PARAM_EXT_TYPE_UINT64, 'default': 0},
+                        "int64": {'type':   mavutil.mavlink.MAV_PARAM_EXT_TYPE_INT64, 'default': 0},
+                        "float": {'type':   mavutil.mavlink.MAV_PARAM_EXT_TYPE_REAL32, 'default': 0.0},
+                        "double": {'type':  mavutil.mavlink.MAV_PARAM_EXT_TYPE_REAL64, 'default': 0.0},
+                        "custom": {'type':  mavutil.mavlink.MAV_PARAM_EXT_TYPE_CUSTOM, 'default': None }
                         }
 
     #version information
