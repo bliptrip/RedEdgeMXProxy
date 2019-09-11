@@ -18,25 +18,32 @@ Runs a mavlink proxy translator/proxy between the Micasense RedEdge HTTPApi and 
 #Camera PARAM_ACK values: https://mavlink.io/en/messages/common.html#PARAM_ACK
 
 from concurrent.futures import *
+import copy
 import datetime
 import glob
 import io
 import json
-from pymavlink import mavutil, mavparm
 from optparse import OptionParser
 import os
 from PIL import Image
+from pymavlink import mavutil, mavparm
+try:
+    import queue as Queue
+except ImportError:
+    import Queue
 import requests
 import select
 import signal
 import subprocess as sp
 import struct
 import sys
-from threading import Timer
+from threading import Lock, Timer, Thread
 from time import time, sleep
 import xml.etree.ElementTree as ET
 
+TIMER_INFINITE_COUNT = -1
 MB_PER_GB = 1024 #Number of megabytes per gigabyte
+dataPackets = frozenset(['BAD_DATA','LOG_DATA'])
 
 def parse_args():
     parser = OptionParser("micamavproxy.py [options]")
@@ -51,7 +58,7 @@ def parse_args():
     parser.add_option("--source-component", dest='SOURCE_COMPONENT', type='int', 
                       default=100, help='MAVLink source component for this GCS')
     parser.add_option("--target-system", dest='TARGET_SYSTEM', type='int',
-                      default=0, help='MAVLink target master system')
+                      default=254, help='MAVLink target master system')
     parser.add_option("--target-component", dest='TARGET_COMPONENT', type='int',
                       default=0, help='MAVLink target master component')
     parser.add_option("--camera_defs_local", default="micasense_rededge_mx.xml", help="If extra parameters are supported for this camera, this is the location of the camera definitions file (XML).")
@@ -63,6 +70,7 @@ def parse_args():
     parser.add_option("--rtscts", action='store_true', help="enable hardware RTS/CTS flow control")
     parser.add_option("--stream_port", type='int', default=5600, help='Stream live video feed to designated UDP port')
     parser.add_option("--stream_ip", default='127.0.0.1', help='Stream live video feed to designated IP address.')
+    parser.add_option("--log_file", help='Stream all traffic in/out of master to specified log file.')
     return(parser.parse_args())
 
 
@@ -138,40 +146,85 @@ def param_encode(value, param_type, as_byte_array=False):
         if( param_type == mavutil.mavlink.MAV_PARAM_EXT_TYPE_CUSTOM ):
             rvalue = 0 #Unsupported as of now with this setup
     else:
-        rvalue = str(value)
+        rvalue = str(value).encode('utf-8')
     rvalue = struct.pack('<128s', rvalue)
     return(rvalue)
 
 
 class CameraIntervalTimer(object):
-    def __init__(self, interval, function, count, *args, **kwargs):
-        self._timer     = None
-        self.interval   = interval
-        self.function   = function
-        self.image_index = 0
-        self.immortal   = True
-        self.count      = count
-        self.args       = args
-        self.kwargs     = kwargs
-        self.is_running = False
-        self.start()
+    """
+    Python periodic Thread using Timer with instant cancellation
+    """
 
-    def _run(self):
-        self.is_running = False
-        self.count = self.count - 1
-        if( self.immortal or (self.count >= 0) ):
-            self.start()
-            self.function(*self.args, **self.kwargs)
+    def __init__(self, callback=None, period=1, name=None, count=TIMER_INFINITE_COUNT, *args, **kwargs):
+        self.name = name
+        self.args = args
+        self.kwargs = kwargs
+        self.callback = callback
+        self.count      = count
+        self.period = period
+        self.stop = False
+        self.current_timer = None
+        self.schedule_lock = Lock()
 
     def start(self):
-        if not self.is_running:
-            self._timer = Timer(self.interval, self._run)
-            self._timer.start()
-            self.is_running = True
+        """
+        Mimics Thread standard start method
+        """
+        self.schedule_timer()
 
-    def stop(self):
-        self._timer.cancel()
-        self.is_running = False
+    def run(self, *args, **kwargs):
+        """
+        By default run callback. Override it if you want to use inheritance
+        """
+        if self.callback is not None:
+            self.callback(*args, **kwargs)
+
+    def _run(self, *args, **kwargs):
+        """
+        Run desired callback and then reschedule Timer (if thread is not stopped)
+        """
+        try:
+            self.run(*args, **kwargs)
+        except Exception as e:
+            logging.exception("Exception in running periodic thread")
+        finally:
+            with self.schedule_lock:
+                if not self.stop:
+                    self.schedule_timer()
+
+    def schedule_timer(self):
+        """
+        Schedules next Timer run
+        """
+        if( (self.count > 0) or (self.count == TIMER_INFINITE_COUNT) ):
+            if( self.count > 0 ):
+                self.count = self.count - 1
+                self.current_timer = Timer(self.period, self._run, *self.args, **self.kwargs)
+                if self.name:
+                    self.current_timer.name = self.name
+                self.current_timer.start()
+        else:
+            with self.schedule_lock:
+                self.stop = True
+                if self.current_timer is not None:
+                    self.current_timer.cancel()
+
+    def cancel(self):
+        """
+        Mimics Timer standard cancel method
+        """
+        with self.schedule_lock:
+            self.stop = True
+            if self.current_timer is not None:
+                self.current_timer.cancel()
+
+    def join(self):
+        """
+        Mimics Thread standard join method
+        """
+        self.current_timer.join()
+
 
 class MavCamParams():
     def __init__(self, ip, camera_defs):
@@ -682,9 +735,10 @@ class MavCamParams():
         self.params["GCS_STREAM_IP0"]['attrib']['value'] = value
         return(True)
 
+#Rather than a thread pool, consider using queues to process messages and send responses in a meaningful way
 
 class MavLink:
-    def __init__(self, ip, mav10, mav20, source_system, source_component, target_system, target_component, rtscts, baudrate, descriptor, stream_ip, stream_port, camera_defs, camera_url, max_workers=10):
+    def __init__(self, ip, mav10, mav20, source_system, source_component, target_system, target_component, rtscts, baudrate, descriptor, stream_ip, stream_port, camera_defs, camera_url, log_file, max_workers=10):
         self.ip                 = ip
         self.source_system      = source_system
         self.source_component   = source_component
@@ -693,6 +747,16 @@ class MavLink:
         self.descriptor         = descriptor 
         self.baudrate           = baudrate
         self.rtscts             = rtscts
+        self.flushlogs          = True
+        self.log_exit           = True
+        self.log_file           = log_file
+        if( log_file ):
+            self.logfd          = open(log_file, 'wb')
+            self.logq           = Queue.Queue()
+            self.logq.queue.clear() #Flush the queue before starting
+            self.logt           = Thread(target=self.log_writer, name='log_writer: {}'.format(self))
+            self.logt.daemon    = True
+            self.logt.start()
         self.link_add(descriptor)
         self.pool               = ThreadPoolExecutor(max_workers=max_workers)
         self.cam_stream_timer   = None
@@ -712,6 +776,46 @@ class MavLink:
         self.model              = struct.pack('<32s',"RedEdgeMX".encode('utf-8'))
         self.mav_cmd_video_start_streaming(None, self.master, {})
 
+
+    def shutdown(self):
+        #Shutdown video streaming
+        self.mav_cmd_video_stop_streaming(None, None, {})
+        #Shutdown the mavlink connection callbacks
+        self.master.mav.set_callback(None, self.master)
+        if hasattr(self.master.mav, 'set_send_callback'):
+            self.master.mav.set_send_callback(None, self.master)
+        #Shutdown the ThreadPool executor
+        self.pool.shutdown(wait=True)
+        #Shutdown the log_writer() thread
+        if( self.log_file ):
+            self.log_exit = True
+            self.logt.join()
+            self.logfd.close()
+
+    def log_writer(self):
+        '''log writing thread'''
+        while not self.log_exit:
+            timeout = time() + 10
+            while not self.logq.empty() and time() < timeout:
+                msg = self.logq.get()
+                #Do a sanity check to make sure the message at offset 8 is the mavlink start byte
+                self.logfd.write(msg)
+            if self.flushlogs or time() >= timeout:
+                self.logfd.flush()
+
+    def master_send_callback(self, m, master):
+        '''called on sending a message'''
+        if( self.logq ):
+            sysid = m.get_srcSystem()
+            mtype = m.get_type()
+            print("Send master callback with source system {}, type {}".format(sysid,mtype))
+            #usec = get_usec()
+            #usec = (usec & ~3) | 3 # linknum 3
+            #self.logq.put(bytearray(struct.pack('>Q', usec) + m.get_msgbuf()))
+            message = copy.deepcopy(m.get_msgbuf())
+            self.logq.put(message)
+        return
+
     def read(self, timeout):
         master = self.master
         rin = []
@@ -725,7 +829,7 @@ class MavLink:
                 pass 
         for fd in rin:
             if fd == master.fd:
-                process_master(master)
+                process_master(master, self)
         return
 
     def send_heartbeat(self):
@@ -786,8 +890,8 @@ class MavLink:
         if self.rtscts:
             conn.set_rtscts(True)
         conn.mav.set_callback(self.master_callback, conn)
-        #if hasattr(conn.mav, 'set_send_callback'):
-        #    conn.mav.set_send_callback(self.master_send_callback, conn)
+        if hasattr(conn.mav, 'set_send_callback'):
+            conn.mav.set_send_callback(self.master_send_callback, conn)
         #conn.linknum = len(self.mpstate.mav_master)
         conn.linknum = 1
         conn.linkerror = False
@@ -830,7 +934,7 @@ class MavLink:
             
         mtype = m.get_type()
         if( mtype in mav_cam_input_messages ):
-            print('master_msg_handling(): Received mavlink message with source system id {} and source component {}, type: {}'.format(m.get_srcSystem(), m.get_srcComponent(), mtype)) 
+            #print('master_msg_handling(): Received mavlink message with source system id {} and source component {}, type: {}'.format(m.get_srcSystem(), m.get_srcComponent(), mtype)) 
             decoded_message_dict = self.mav_decode(m, master)
             #If the target_system and target_component are embedded in a message, then check that they are valid for this component
             if ('target_system' in decoded_message_dict) and ('target_component' in decoded_message_dict):
@@ -846,9 +950,16 @@ class MavLink:
         '''process mavlink message m on master, sending any messages to recipients'''
         # see if it is handled by a specialised sysid connection
         sysid = m.get_srcSystem()
+        compid = m.get_srcComponent()
         mtype = m.get_type()
         
-        #print("Received master callback with source system {}, type {}".format(sysid,mtype))
+        if( (sysid == self.target_system) and (compid == self.target_component) and (mtype in mav_cam_input_messages) and self.logq ):
+            print("Received master callback with source system {}, type {}".format(sysid,mtype))
+            message = copy.deepcopy(m.get_msgbuf())
+            self.logq.put(message)
+            #usec = get_usec()
+            #usec = (usec & ~3) | master.linknum
+            #self.logq.put(bytearray(struct.pack('>Q', usec) + m.get_msgbuf()))
 
         if getattr(m, '_timestamp', None) is None:
             master.post_message(m)
@@ -1078,7 +1189,7 @@ class MavLink:
                 if( self.cam_interval_timer ):
                     self.cam_interval_timer.stop()
                     self.cam_interval_timer = None
-                self.cam_interval_timer = CameraIntervalTimer(interval, self.mav_cmd_image_capture, 0, m, master, decoded_message_dict)
+                self.cam_interval_timer = CameraIntervalTimer(self.mav_cmd_image_capture, interval, 'timer_capture', TIMER_INFINITE_COUNT, m, master, decoded_message_dict)
                 if self.cam_interval_timer is None:
                     result = mavutil.mavlink.MAV_RESULT_FAILED
         else:
@@ -1117,7 +1228,7 @@ class MavLink:
         http_post(self.ip, 'config', {'streaming_enable': True, 'streaming_allowed': True, 'preview_band': 'multi'})
         #Create pipe
         self.pipe = sp.Popen(self.gst_command, stdin=sp.PIPE)
-        self.cam_stream_timer = CameraIntervalTimer(0.5, self.mav_stream_capture, 0, m, master, decoded_message_dict, pipe=self.pipe)
+        self.cam_stream_timer = CameraIntervalTimer(self.mav_stream_capture, 0.5, "video_start_streaming", TIMER_INFINITE_COUNT, m, master, decoded_message_dict, pipe=self.pipe)
         if self.cam_stream_timer is None:
             result = mavutil.mavlink.MAV_RESULT_FAILED
         return(result)
@@ -1125,11 +1236,12 @@ class MavLink:
     def mav_cmd_video_stop_streaming(self, m, master, decoded_message_dict):
         result = mavutil.mavlink.MAV_RESULT_ACCEPTED
         if( self.cam_stream_timer ):
-            self.cam_stream_timer.stop()
+            self.cam_stream_timer.cancel()
             self.cam_stream_timer = None
         if( self.pipe is not None ):
             #Close the gstreamer pipe
-            self.pipe.close()
+            self.pipe.kill()
+            self.pipe.wait()
         return(result)
 
     def mav_cmd_request_video_stream_information(self, m, master, decoded_message_dict):
@@ -1204,6 +1316,11 @@ class MavLink:
         return
 
 
+def get_usec():
+    '''time since 1970 in microseconds'''
+    return int(time() * 1.0e6)
+
+
 def set_mav_version(mav10, mav20):
     global mavversion
     '''Set the Mavlink version based on commandline options'''
@@ -1220,18 +1337,21 @@ def set_mav_version(mav10, mav20):
         os.environ['MAVLINK20'] = '1'
         mavversion = "2"
 
-def process_master(m):
+def process_master(m, mavl):
     '''process packets from the MAVLink master'''
     try:
         s = m.recv(16*1024)
     except Exception:
-        time.sleep(0.1)
+        sleep(0.1)
         return
     # prevent a dead serial port from causing the CPU to spin. The user hitting enter will
     # cause it to try and reconnect
     if len(s) == 0:
-        time.sleep(0.1)
+        sleep(0.1)
         return
+
+    if mavl.logfd:
+        mavl.logfd.write(bytearray(s))
 
     msgs = m.mav.parse_buffer(s)
     if msgs:
@@ -1244,6 +1364,7 @@ def main():
     global mav_cam_cmds
     global mav_cam_input_messages
     global mav_param_ext_types
+    global exit
     exit = False
     (opts, args) = parse_args()
     if len(args) != 0:
@@ -1324,7 +1445,8 @@ def main():
         sys.exit(1)
 
     def quit_handler(signum = None, frame = None):
-        #print('Signal handler called with signal', signum)
+        global exit
+        print('Signal handler called with signal', signum)
         if exit:
             print('Clean shutdown impossible, forcing an exit')
             sys.exit(0)
@@ -1349,18 +1471,16 @@ def main():
         source_component = mavutil.mavlink.MAV_COMP_ID_CAMERA
     else:
         source_component = opts.SOURCE_COMPONENT
-    mavl = MavLink(opts.ip, opts.mav10, opts.mav20, opts.SOURCE_SYSTEM, source_component, opts.TARGET_SYSTEM, opts.TARGET_COMPONENT, opts.rtscts, opts.baudrate, descriptor, opts.stream_ip, opts.stream_port, camera_defs=opts.camera_defs_local, camera_url=opts.camera_defs_url)
 
-    #Cleanup
-    #for master in mpstate.mav_master:
-    #    if master.fd is None:
-    #        if master.port.inWaiting() > 0:
-    #            process_master(master)
+    mavl = MavLink(opts.ip, opts.mav10, opts.mav20, opts.SOURCE_SYSTEM, source_component, opts.TARGET_SYSTEM, opts.TARGET_COMPONENT, opts.rtscts, opts.baudrate, descriptor, opts.stream_ip, opts.stream_port, camera_defs=opts.camera_defs_local, camera_url=opts.camera_defs_url, log_file=opts.log_file)
 
     #Main Loop
     while exit == False:
         mavl.heartbeat_trigger()
         mavl.read(timeout=1.0)
+
+    #Cleanup
+    mavl.shutdown()
 
 if __name__ == "__main__":
     main()
