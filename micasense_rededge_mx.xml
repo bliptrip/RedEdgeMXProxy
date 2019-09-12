@@ -150,21 +150,6 @@
         <parameter name="CAM_AGC_MIN_MEAN" type="float" default="0.0">
             <description>Sets the minimum normalized mean value for each image during Automatic Gain Control (AGC).  Valid values are from 0.0 to 1.0, inclusive.</description>
         </parameter>
-        <parameter name="GCS_STREAM_PORT" type="uint16" default="5000">
-            <description>The ground control station UDP server port to stream live video to.</description>
-        </parameter>
-        <parameter name="GCS_STREAM_IP3" type="uint8" default="192">
-            <description>The ground control station server IP address most significant byte (byte 3)</description>
-        </parameter>
-        <parameter name="GCS_STREAM_IP2" type="uint8" default="168">
-            <description>The ground control station server IP address byte 2</description>
-        </parameter>
-        <parameter name="GCS_STREAM_IP1" type="uint8" default="89">
-            <description>The ground control station server IP address byte 1</description>
-        </parameter>
-        <parameter name="GCS_STREAM_IP0" type="uint8" default="255">
-            <description>The ground control station server IP address least significant byte (byte 0)</description>
-        </parameter>
     </parameters>
     <localization>
         <!-- If no appropriate locale is found, the original (above) will be used -->
