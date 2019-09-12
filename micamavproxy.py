@@ -738,7 +738,7 @@ class MavCamParams():
 #Rather than a thread pool, consider using queues to process messages and send responses in a meaningful way
 
 class MavLink:
-    def __init__(self, ip, mav10, mav20, source_system, source_component, target_system, target_component, rtscts, baudrate, descriptor, stream_ip, stream_port, camera_defs, camera_url, log_file, max_workers=10):
+    def __init__(self, ip, mav10, mav20, source_system, source_component, target_system, target_component, rtscts, baudrate, descriptor, stream_ip, stream_port, camera_defs, camera_url, log_file):
         self.ip                 = ip
         self.source_system      = source_system
         self.source_component   = source_component
@@ -757,8 +757,11 @@ class MavLink:
             self.logt           = Thread(target=self.log_writer, name='log_writer: {}'.format(self))
             self.logt.daemon    = True
             self.logt.start()
+        self.recvq              = Queue.Queue() #Mavlink receive/process message queue
+        self.recvq_exit         = False
+        self.recvt              = Thread(target=self.recvq_process, name='recvq_process: {}'.format(self))
+        self.recvt.start()
         self.link_add(descriptor)
-        self.pool               = ThreadPoolExecutor(max_workers=max_workers)
         self.cam_stream_timer   = None
         self.cam_interval_timer = None
         self.mav_cam_params     = MavCamParams(ip, camera_defs)
@@ -784,8 +787,9 @@ class MavLink:
         self.master.mav.set_callback(None, self.master)
         if hasattr(self.master.mav, 'set_send_callback'):
             self.master.mav.set_send_callback(None, self.master)
-        #Shutdown the ThreadPool executor
-        self.pool.shutdown(wait=True)
+        #Shutdown the receive message thread
+        self.recvq_exit = True
+        self.recvt.join() #Wait for thread to fully die
         #Shutdown the log_writer() thread
         if( self.log_file ):
             self.log_exit = True
@@ -912,16 +916,6 @@ class MavLink:
 
     def master_msg_handling(self, m, master):
         '''link message handling for an upstream link'''
-#        if self.target_system != 0 and m.get_srcSystem() != self.target_system:
-#            # don't process messages not from our target
-#            if m.get_type() == "BAD_DATA":
-#                if self.mpstate.settings.shownoise and mavutil.all_printable(m.data):
-#                    out = m.data
-#                    if type(m.data) == bytearray:
-#                        out = m.data.decode('ascii')
-#                    #self.mpstate.console.write(out, bg='red')
-#            return
-
         if self.target_system != 0 and master.target_system != self.target_system:
             # keep the pymavlink level target system aligned with the MAVProxy setting
             print("change target_system %u" % self.target_system)
@@ -931,20 +925,27 @@ class MavLink:
             # keep the pymavlink level target component aligned with the MAVProxy setting
             print("change target_component %u" % self.target_component)
             master.target_component = self.target_component
-            
-        mtype = m.get_type()
-        if( mtype in mav_cam_input_messages ):
-            #print('master_msg_handling(): Received mavlink message with source system id {} and source component {}, type: {}'.format(m.get_srcSystem(), m.get_srcComponent(), mtype)) 
-            decoded_message_dict = self.mav_decode(m, master)
-            #If the target_system and target_component are embedded in a message, then check that they are valid for this component
-            if ('target_system' in decoded_message_dict) and ('target_component' in decoded_message_dict):
-                target_system       = decoded_message_dict['target_system']
-                target_component    = decoded_message_dict['target_component']
-                if (target_system == self.source_system) and (target_component == self.source_component):
-                    self.pool.submit(getattr(self, mav_cam_input_messages[mtype]), m, master, decoded_message_dict)
-            else:
-                self.pool.submit(getattr(self, mav_cam_input_messages[mtype]), m, master, decoded_message_dict)
 
+        #Any messages not coming from our targeted system (GCS) will be ignored
+        if (self.target_system == 0) or (m.get_srcSystem() == self.target_system):
+            mtype = m.get_type()
+            if( mtype in mav_cam_input_messages ):
+                #print('master_msg_handling(): Received mavlink message with source system id {} and source component {}, type: {}'.format(m.get_srcSystem(), m.get_srcComponent(), mtype)) 
+                decoded_message_dict = self.mav_decode(m, master)
+                #If the target_system and target_component are embedded in a message, then check that they are valid for this component
+                if ('target_system' in decoded_message_dict) and ('target_component' in decoded_message_dict):
+                    target_system       = decoded_message_dict['target_system']
+                    target_component    = decoded_message_dict['target_component']
+                    if (target_system == self.source_system) and (target_component == self.source_component):
+                        self.recvq.put((getattr(self, mav_cam_input_messages[mtype]), m, master, decoded_message_dict))
+                else:
+                    self.recvq.put((getattr(self, mav_cam_input_messages[mtype]), m, master, decoded_message_dict))
+
+    def recvq_process(self):
+        while not self.recvq_exit:
+            (cb, m, master, decoded_message_dict) = self.recvq.get()
+            cb(m, master, decoded_message_dict) #Make a call to process appropriate message processing callback
+        return
 
     def master_callback(self, m, master):
         '''process mavlink message m on master, sending any messages to recipients'''
@@ -971,7 +972,6 @@ class MavLink:
         dm = master.mav.decode(b)
         dmd = dm.to_dict()
         return(dmd)
-
 
     def mav_cmd_long(self, m, master, decoded_message_dict):
         cmdid = decoded_message_dict['command']
@@ -1192,6 +1192,8 @@ class MavLink:
                 self.cam_interval_timer = CameraIntervalTimer(self.mav_cmd_image_capture, interval, 'timer_capture', TIMER_INFINITE_COUNT, m, master, decoded_message_dict)
                 if self.cam_interval_timer is None:
                     result = mavutil.mavlink.MAV_RESULT_FAILED
+                else:
+                    self.cam_interval_timer.start()
         else:
             result = mavutil.mavlink.MAV_RESULT_FAILED
         return(result)
@@ -1231,6 +1233,8 @@ class MavLink:
         self.cam_stream_timer = CameraIntervalTimer(self.mav_stream_capture, 0.5, "video_start_streaming", TIMER_INFINITE_COUNT, m, master, decoded_message_dict, pipe=self.pipe)
         if self.cam_stream_timer is None:
             result = mavutil.mavlink.MAV_RESULT_FAILED
+        else:
+            self.cam_stream_timer.start()
         return(result)
 
     def mav_cmd_video_stop_streaming(self, m, master, decoded_message_dict):
