@@ -156,7 +156,7 @@ class CameraIntervalTimer(object):
     Python periodic Thread using Timer with instant cancellation
     """
 
-    def __init__(self, callback=None, period=1, name=None, count=TIMER_INFINITE_COUNT, *args, **kwargs):
+    def __init__(self, callback, period, name, count, *args, **kwargs):
         self.name = name
         self.args = args
         self.kwargs = kwargs
@@ -173,21 +173,21 @@ class CameraIntervalTimer(object):
         """
         self.schedule_timer()
 
-    def run(self, *args, **kwargs):
+    def run(self):
         """
         By default run callback. Override it if you want to use inheritance
         """
         if self.callback is not None:
-            self.callback(*args, **kwargs)
+            self.callback(*self.args, **self.kwargs)
 
-    def _run(self, *args, **kwargs):
+    def _run(self):
         """
         Run desired callback and then reschedule Timer (if thread is not stopped)
         """
         try:
-            self.run(*args, **kwargs)
+            self.run()
         except Exception as e:
-            logging.exception("Exception in running periodic thread")
+            print("Exception in running periodic thread: {}".format(e))
         finally:
             with self.schedule_lock:
                 if not self.stop:
@@ -200,10 +200,10 @@ class CameraIntervalTimer(object):
         if( (self.count > 0) or (self.count == TIMER_INFINITE_COUNT) ):
             if( self.count > 0 ):
                 self.count = self.count - 1
-                self.current_timer = Timer(self.period, self._run, *self.args, **self.kwargs)
-                if self.name:
-                    self.current_timer.name = self.name
-                self.current_timer.start()
+            self.current_timer = Timer(self.period, self._run)
+            if self.name:
+                self.current_timer.name = self.name
+            self.current_timer.start()
         else:
             with self.schedule_lock:
                 self.stop = True
@@ -737,7 +737,7 @@ class MavCamParams():
 
 #Rather than a thread pool, consider using queues to process messages and send responses in a meaningful way
 
-class MavLink:
+class MicaMavLink:
     def __init__(self, ip, mav10, mav20, source_system, source_component, target_system, target_component, rtscts, baudrate, descriptor, stream_ip, stream_port, camera_defs, camera_url, log_file):
         self.ip                 = ip
         self.source_system      = source_system
@@ -748,14 +748,14 @@ class MavLink:
         self.baudrate           = baudrate
         self.rtscts             = rtscts
         self.flushlogs          = True
-        self.log_exit           = True
+        self.log_exit           = False
         self.log_file           = log_file
         if( log_file ):
             self.logfd          = open(log_file, 'wb')
             self.logq           = Queue.Queue()
             self.logq.queue.clear() #Flush the queue before starting
-            self.logt           = Thread(target=self.log_writer, name='log_writer: {}'.format(self))
-            self.logt.daemon    = True
+            self.logt           = Thread(target=self.logqt, name='logqt: {}'.format(self))
+            #self.logt.daemon    = True
             self.logt.start()
         self.recvq              = Queue.Queue() #Mavlink receive/process message queue
         self.recvq_exit         = False
@@ -796,8 +796,8 @@ class MavLink:
             self.logt.join()
             self.logfd.close()
 
-    def log_writer(self):
-        '''log writing thread'''
+    def logqt(self):
+        '''log queue thread'''
         while not self.log_exit:
             timeout = time() + 10
             while not self.logq.empty() and time() < timeout:
@@ -812,10 +812,6 @@ class MavLink:
         if( self.logq ):
             sysid = m.get_srcSystem()
             mtype = m.get_type()
-            print("Send master callback with source system {}, type {}".format(sysid,mtype))
-            #usec = get_usec()
-            #usec = (usec & ~3) | 3 # linknum 3
-            #self.logq.put(bytearray(struct.pack('>Q', usec) + m.get_msgbuf()))
             message = copy.deepcopy(m.get_msgbuf())
             self.logq.put(message)
         return
@@ -954,13 +950,11 @@ class MavLink:
         compid = m.get_srcComponent()
         mtype = m.get_type()
         
-        if( (sysid == self.target_system) and (compid == self.target_component) and (mtype in mav_cam_input_messages) and self.logq ):
-            print("Received master callback with source system {}, type {}".format(sysid,mtype))
+        #if( (sysid == self.target_system) and (compid == self.target_component) and (mtype in mav_cam_input_messages) and self.logq ):
+        if( (sysid == self.target_system) and (compid == self.target_component) and self.logq ):
+            #print("Received master callback with source system {}, type {}".format(sysid,mtype))
             message = copy.deepcopy(m.get_msgbuf())
             self.logq.put(message)
-            #usec = get_usec()
-            #usec = (usec & ~3) | master.linknum
-            #self.logq.put(bytearray(struct.pack('>Q', usec) + m.get_msgbuf()))
 
         if getattr(m, '_timestamp', None) is None:
             master.post_message(m)
@@ -988,7 +982,7 @@ class MavLink:
             #print(result)
         else:
             result = mavutil.mavlink.MAV_RESULT_UNSUPPORTED
-        command_ack_send(command=decoded_message_dict['command'],
+        master.mav.command_ack_send(command=decoded_message_dict['command'],
                          result=result,
                          target_system=m.get_srcSystem(),
                          target_component=m.get_srcComponent())
@@ -996,7 +990,6 @@ class MavLink:
 
 
     def mav_cmd_request_camera_information(self, m, master, decoded_message_dict):
-        print("request_camera_information: {}".format(decoded_message_dict))#
         result = mavutil.mavlink.MAV_RESULT_ACCEPTED
         request_information = decoded_message_dict['param1']
         if request_information:
@@ -1006,14 +999,11 @@ class MavLink:
             res_h = 0
             res_v = 0
             flags = mavutil.mavlink.CAMERA_CAP_FLAGS_CAPTURE_IMAGE | mavutil.mavlink.CAMERA_CAP_FLAGS_HAS_IMAGE_SURVEY_MODE
-            print(flags)
             rd = http_get(self.ip, "version")
             if( rd is not None ):
-                print(rd)
                 sw_version = rd['sw_version']
             rd = http_get(self.ip, "camera_info")
             if( rd is not None ):
-                print(rd)
                 focal_length = rd['1']['focal_length_px']
                 res_h = rd['1']['image_width']
                 res_v = rd['1']['image_height']
@@ -1277,7 +1267,6 @@ class MavLink:
     def param_ext_request_read(self, m, master, decoded_message_dict):
         if( self.mav_cam_params ):
             param = decoded_message_dict['param_id']
-            print(param)
             if( param in self.mav_cam_params.keys() ):
                 value = self.mav_cam_params[param]
                 param_type = self.mav_cam_params.type(param)
@@ -1294,7 +1283,6 @@ class MavLink:
     def param_ext_request_list(self, m, master, decoded_message_dict):
         try:
             if( self.mav_cam_params ):
-                print(self.mav_cam_params.keys())
                 for param in self.mav_cam_params.keys():
                     decoded_message_dict['param_id'] = param
                     decoded_message_dict['param_index'] = -1
@@ -1304,19 +1292,21 @@ class MavLink:
             pass
         return
 
-    def param_ext_request_set(self,m,master):
-        param_ack_status = PARAM_ACK_VALUE_UNSUPPORTED #Assume guilty until proven innocent
+    def param_ext_request_set(self, m, master, decoded_message_dict):
+        param_ack_status = mavutil.mavlink.PARAM_ACK_VALUE_UNSUPPORTED #Assume guilty until proven innocent
         param = decoded_message_dict['param_id']
         value = decoded_message_dict['param_value']
         ptype = decoded_message_dict['param_type']
-        if (self.mav_cam_params) and (param in self.mav_cam_params) and (ptype == self.mav_cam_params.type(param)):
+        param_value = param_encode(value, ptype)
+        #print("param_id: {}, type: {}".format(param, type(param)))
+        #print("param_value: {}, type: {}".format(param_value, type(param_value)))
+        if (self.mav_cam_params) and (param in self.mav_cam_params.keys()) and (ptype == self.mav_cam_params.type(param)):
             self.mav_cam_params[param] = value
-            param_ack_status = PARAM_ACK_ACCEPTED
-        master.mav.param_ext_ack_send(param_id = param,
-                                      param_value = value,
+            param_ack_status = mavutil.mavlink.PARAM_ACK_ACCEPTED
+        master.mav.param_ext_ack_send(param_id = param.encode('utf-8'),
+                                      param_value = param_value,
                                       param_type = ptype,
                                       param_result = param_ack_status)
-
         return
 
 
@@ -1353,9 +1343,6 @@ def process_master(m, mavl):
     if len(s) == 0:
         sleep(0.1)
         return
-
-    if mavl.logfd:
-        mavl.logfd.write(bytearray(s))
 
     msgs = m.mav.parse_buffer(s)
     if msgs:
@@ -1419,7 +1406,7 @@ def main():
                                     }
 
     mav_param_ext_types = {
-                        "bool": {'type':    mavutil.mavlink.MAV_PARAM_EXT_TYPE_UINT8, 'default': False},
+                        "bool": {'type':    mavutil.mavlink.MAV_PARAM_EXT_TYPE_UINT8, 'default': 0},
                         "uint8": {'type':   mavutil.mavlink.MAV_PARAM_EXT_TYPE_UINT8, 'default': 0},
                         "int8": {'type':    mavutil.mavlink.MAV_PARAM_EXT_TYPE_INT8, 'default': 0},
                         "uint16": {'type':  mavutil.mavlink.MAV_PARAM_EXT_TYPE_UINT16, 'default': 0},
@@ -1476,7 +1463,7 @@ def main():
     else:
         source_component = opts.SOURCE_COMPONENT
 
-    mavl = MavLink(opts.ip, opts.mav10, opts.mav20, opts.SOURCE_SYSTEM, source_component, opts.TARGET_SYSTEM, opts.TARGET_COMPONENT, opts.rtscts, opts.baudrate, descriptor, opts.stream_ip, opts.stream_port, camera_defs=opts.camera_defs_local, camera_url=opts.camera_defs_url, log_file=opts.log_file)
+    mavl = MicaMavLink(opts.ip, opts.mav10, opts.mav20, opts.SOURCE_SYSTEM, source_component, opts.TARGET_SYSTEM, opts.TARGET_COMPONENT, opts.rtscts, opts.baudrate, descriptor, opts.stream_ip, opts.stream_port, camera_defs=opts.camera_defs_local, camera_url=opts.camera_defs_url, log_file=opts.log_file)
 
     #Main Loop
     while exit == False:

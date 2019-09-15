@@ -26,7 +26,7 @@
                 <option name="Enable" value="1" />
             </options>
         </parameter>
-        <parameter name="CAM_DET_PAN" type="bool" default="False">
+        <parameter name="CAM_DET_PAN" type="bool" default="0">
             <description>Autodetect the calibration panel in the captured image.</description>
         </parameter>
         <parameter name="CAM_EXP1" type="float" default="1.0">
