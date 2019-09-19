@@ -17,9 +17,12 @@ Runs a mavlink proxy translator/proxy between the Micasense RedEdge HTTPApi and 
 #Camera response from PARAM_EXT_SET: https://mavlink.io/en/messages/common.html#PARAM_EXT_ACK
 #Camera PARAM_ACK values: https://mavlink.io/en/messages/common.html#PARAM_ACK
 
+import sys
+assert sys.version_info >= (3,4)
+
 from concurrent.futures import *
 import copy
-import datetime
+from datetime import datetime
 import glob
 import io
 import json
@@ -36,10 +39,13 @@ import select
 import signal
 import subprocess as sp
 import struct
-import sys
 from threading import Lock, Timer, Thread
 from time import time, sleep
 import xml.etree.ElementTree as ET
+if sys.version_info < (3,7):
+    #Fix to python versions 3.4, 3.5, and 3.6 that lack datetime/date's fromisoformat()
+    from backports.datetime_fromisoformat import MonkeyPatch
+    MonkeyPatch.patch_fromisoformat()
 
 TIMER_INFINITE_COUNT = -1
 MB_PER_GB = 1024 #Number of megabytes per gigabyte
@@ -71,6 +77,7 @@ def parse_args():
     parser.add_option("--stream_port", type='int', default=5600, help='Stream live video feed to designated UDP port')
     parser.add_option("--stream_ip", default='127.0.0.1', help='Stream live video feed to designated IP address.')
     parser.add_option("--log_file", help='Stream all traffic in/out of master to specified log file.')
+    parser.add_option("--multicast", action='store_true', default=False, help="Stream video as multicast.  NOTE: This will not work for some wireless cards.")
     return(parser.parse_args())
 
 
@@ -120,8 +127,22 @@ def http_get(ip, route):
                 pass
     return(rd)
 
+def param_decode(value, param_id, mavcamparams, as_byte_array=False):
+    """
+    Takes 'value' of extra parameter as string and converts to appropriate type.
+    """
+    if( as_byte_array == True ):
+        rvalue = value
+    else:
+        rtype = mavcamparams.rtype(param_id)
+        rvalue = mav_param_ext_types[rtype]['castfunc'](value)
+    return(rvalue)
 
 def param_encode(value, param_type, as_byte_array=False):
+    """
+    Take raw 'value' of extra parameter and converts to string for sending over
+    mavlink.
+    """
     if( as_byte_array == True ):
         if( param_type == mavutil.mavlink.MAV_PARAM_EXT_TYPE_UINT8 ):
             rvalue = struct.pack('<B', value)
@@ -164,14 +185,18 @@ class CameraIntervalTimer(object):
         self.count      = count
         self.period = period
         self.stop = False
+        self.running = False
         self.current_timer = None
         self.schedule_lock = Lock()
+        self.time_started = 0
 
     def start(self):
         """
         Mimics Thread standard start method
         """
-        self.schedule_timer()
+        with self.schedule_lock:
+            self.running = True
+            self.schedule_timer()
 
     def run(self):
         """
@@ -205,10 +230,11 @@ class CameraIntervalTimer(object):
                 self.current_timer.name = self.name
             self.current_timer.start()
         else:
-            with self.schedule_lock:
+                self.running = False
                 self.stop = True
                 if self.current_timer is not None:
                     self.current_timer.cancel()
+                    self.current_timer = None
 
     def cancel(self):
         """
@@ -218,6 +244,7 @@ class CameraIntervalTimer(object):
             self.stop = True
             if self.current_timer is not None:
                 self.current_timer.cancel()
+                self.current_timer = None
 
     def join(self):
         """
@@ -257,7 +284,7 @@ class MavCamParams():
                         p.attrib['mtype'] = mav_param_ext_types[ptype]['type']
                         p.attrib['stale'] = True #Mark parameters as initially stale to force them to be read in from the camera
                         if( 'default' in p.attrib ):
-                            p.attrib['value'] = p.attrib['default']
+                            p.attrib['value'] = mav_param_ext_types[ptype]['castfunc'](p.attrib['default'])
                         else:
                             p.attrib['value'] = mav_param_ext_types[ptype]['default']
                 paramname = p.attrib['name']
@@ -274,8 +301,17 @@ class MavCamParams():
         return setattr(self, '_{0}_'.format(key), value)
 
     def type(self, key):
+        """
+        Return the mavlink type for this parameter.
+        """
         return(self.params[key]['attrib']['mtype'])
 
+    def rtype(self, key):
+        """
+        Return the raw 'xml' type, not the mavlink type.
+        """
+        return(self.params[key]['attrib']['type'])
+        
     @property
     def model(self):
         return(self._model)
@@ -291,17 +327,18 @@ class MavCamParams():
             rd = http_get(self.ip, 'exposure')
             if rd is not None:
                 value = rd['enable_man_exposure']
-                self.params["CAM_EXP_MAN"]['attrib']['value'] = value
+                self.params["CAM_EXP_MAN"]['attrib']['value'] = int(value)
                 self.params["CAM_EXP_MAN"]['attrib']['stale'] = False
         return(self.params["CAM_EXP_MAN"]['attrib']['value'])
 
     @_CAM_EXP_MAN_.setter
     def _CAM_EXP_MAN_(self, value):
         success = False 
-        rd = http_post(self.ip, 'exposure', {'enable_man_exposure': value})
+        mvalue = bool(value)
+        rd = http_post(self.ip, 'exposure', {'enable_man_exposure': mvalue})
         if rd is not None:
             rvalue = rd['enable_man_exposure']
-            if( value == rvalue ):
+            if( mvalue == rvalue ):
                 success = True
                 self.params["CAM_EXP_MAN"]['attrib']['value'] = value
         return(success)
@@ -738,7 +775,7 @@ class MavCamParams():
 #Rather than a thread pool, consider using queues to process messages and send responses in a meaningful way
 
 class MicaMavLink:
-    def __init__(self, ip, mav10, mav20, source_system, source_component, target_system, target_component, rtscts, baudrate, descriptor, stream_ip, stream_port, camera_defs, camera_url, log_file):
+    def __init__(self, ip, mav10, mav20, source_system, source_component, target_system, target_component, rtscts, baudrate, descriptor, stream_ip, stream_port, camera_defs, camera_url, log_file, isMulticast):
         self.ip                 = ip
         self.source_system      = source_system
         self.source_component   = source_component
@@ -775,6 +812,8 @@ class MicaMavLink:
                                    '!', 'progressreport',
                                    '!', 'rtpjpegpay',
                                    '!', 'udpsink', 'host={}'.format(stream_ip), 'port={}'.format(stream_port)]
+        if( isMulticast ):
+            self.gst_command        = self.gst_command + ['auto-multicast=true']
         self.vendor             = struct.pack('<32s',"MicaSense".encode('utf-8'))
         self.model              = struct.pack('<32s',"RedEdgeMX".encode('utf-8'))
         self.mav_cmd_video_start_streaming(None, self.master, {})
@@ -977,6 +1016,7 @@ class MicaMavLink:
             try:
                 result = cmdfunc(m=m, master=master, decoded_message_dict=decoded_message_dict)
             except Exception as e:
+                result = mavutil.mavlink.MAV_RESULT_FAILED
                 print("Exception received: {}".format(e))
                 pass
             #print(result)
@@ -1092,17 +1132,35 @@ class MicaMavLink:
         result = mavutil.mavlink.MAV_RESULT_ACCEPTED
         capture_status = decoded_message_dict['param1']
         if capture_status:
-            master.mav.camera_image_captured_send(time_boot_ms = 0,
-                                                time_utc = 0,
-                                                camera_id = 1,
-                                                lat = 0,
-                                                lon = 0,
-                                                alt = 0,
-                                                relative_alt = 0,
-                                                q = [0.0, 0.0, 0.0, 0.0],
-                                                image_index = 1,
-                                                capture_result = 0,
-                                                file_url = "test.jpg".encode('utf-8'))
+            image_status = 0 #Assume idle at first
+            image_interval = 0.0
+            available_capacity = 0.0
+            time_since_start = 0
+            if( self.cam_interval_timer and self.cam_interval_timer.running ):
+                image_status = 3
+                image_interval = self.cam_interval_timer.period
+                time_since_start = (datetime.now().timestamp() - self.cam_interval_timer.time_started) * 1000
+            rd = http_get(self.ip, "status")
+            if( rd is not None ):
+                if rd['sd_status'] in ['Full', 'Ok']:
+                    available_capacity  = rd['sd_gb_free'] * MB_PER_GB
+            master.mav.camera_capture_status_send(time_boot_ms = 0,
+                                             image_status = image_status, #0: idle, 1: capture in progress, 2: interval set but idle, 3: interval set and capture in progress
+                                             video_status = 0, #0: idle, 1: capture in progress
+                                             image_interval =  float(image_interval),
+                                             recording_time_ms = int(time_since_start),
+                                             available_capacity = float(available_capacity))
+            #master.mav.camera_image_captured_send(time_boot_ms = 0,
+            #                                    time_utc = 0,
+            #                                    camera_id = 1,
+            #                                    lat = 0,
+            #                                    lon = 0,
+            #                                    alt = 0,
+            #                                    relative_alt = 0,
+            #                                    q = [0.0, 0.0, 0.0, 0.0],
+            #                                    image_index = 1,
+            #                                    capture_result = 0,
+            #                                    file_url = "test.jpg".encode('utf-8'))
         return(result)
 
     def mav_cmd_reset_camera_settings(self, m, master, decoded_message_dict):
@@ -1158,8 +1216,8 @@ class MicaMavLink:
                 #Now get the capture status to get the file URLs
                 rd = http_get(self.ip, "capture/{0}".format(rd['id']))
                 if rd is not None:
-                    datetime_utc = datetime.datetime.fromisoformat(rd['time'][:-1]).replace(tzinfo=datetime.timezone.utc)
-                    time_utc = datetime_utc.timestamp() * 1000000
+                    datetime_utc = datetime.fromisoformat(rd['time'][:-1]).replace(tzinfo=datetime.timezone.utc)
+                    time_utc = datetime_utc.timestamp()
                     #Send captured message for all JPEG images
                     loop_captured_images(rd, time_utc, rd['jpeg_storage_path'])
                     #Send captured message for all RAW images
@@ -1170,6 +1228,8 @@ class MicaMavLink:
         result = mavutil.mavlink.MAV_RESULT_ACCEPTED
         interval = decoded_message_dict['param2']
         count = decoded_message_dict['param3']
+        if( count == 0 ):
+            count = TIMER_INFINITE_COUNT
         rd = http_post(self.ip, "config", {'auto_cap_mode': 'disabled'})
         if rd is not None:
             if rd['auto_cap_mode'] != 'disabled':
@@ -1179,7 +1239,7 @@ class MicaMavLink:
                 if( self.cam_interval_timer ):
                     self.cam_interval_timer.stop()
                     self.cam_interval_timer = None
-                self.cam_interval_timer = CameraIntervalTimer(self.mav_cmd_image_capture, interval, 'timer_capture', TIMER_INFINITE_COUNT, m, master, decoded_message_dict)
+                self.cam_interval_timer = CameraIntervalTimer(self.mav_cmd_image_capture, interval, 'timer_capture', count, m, master, decoded_message_dict)
                 if self.cam_interval_timer is None:
                     result = mavutil.mavlink.MAV_RESULT_FAILED
                 else:
@@ -1297,14 +1357,14 @@ class MicaMavLink:
         param = decoded_message_dict['param_id']
         value = decoded_message_dict['param_value']
         ptype = decoded_message_dict['param_type']
-        param_value = param_encode(value, ptype)
+        param_value = param_decode(value, param, self.mav_cam_params)
         #print("param_id: {}, type: {}".format(param, type(param)))
         #print("param_value: {}, type: {}".format(param_value, type(param_value)))
         if (self.mav_cam_params) and (param in self.mav_cam_params.keys()) and (ptype == self.mav_cam_params.type(param)):
-            self.mav_cam_params[param] = value
+            self.mav_cam_params[param] = param_value
             param_ack_status = mavutil.mavlink.PARAM_ACK_ACCEPTED
         master.mav.param_ext_ack_send(param_id = param.encode('utf-8'),
-                                      param_value = param_value,
+                                      param_value = value.encode('utf-8'),
                                       param_type = ptype,
                                       param_result = param_ack_status)
         return
@@ -1406,18 +1466,18 @@ def main():
                                     }
 
     mav_param_ext_types = {
-                        "bool": {'type':    mavutil.mavlink.MAV_PARAM_EXT_TYPE_UINT8, 'default': 0},
-                        "uint8": {'type':   mavutil.mavlink.MAV_PARAM_EXT_TYPE_UINT8, 'default': 0},
-                        "int8": {'type':    mavutil.mavlink.MAV_PARAM_EXT_TYPE_INT8, 'default': 0},
-                        "uint16": {'type':  mavutil.mavlink.MAV_PARAM_EXT_TYPE_UINT16, 'default': 0},
-                        "int16": {'type':   mavutil.mavlink.MAV_PARAM_EXT_TYPE_INT16, 'default': 0},
-                        "uint32": {'type':  mavutil.mavlink.MAV_PARAM_EXT_TYPE_UINT32, 'default': 0},
-                        "int32": {'type':   mavutil.mavlink.MAV_PARAM_EXT_TYPE_INT32, 'default': 0},
-                        "uint64": {'type':  mavutil.mavlink.MAV_PARAM_EXT_TYPE_UINT64, 'default': 0},
-                        "int64": {'type':   mavutil.mavlink.MAV_PARAM_EXT_TYPE_INT64, 'default': 0},
-                        "float": {'type':   mavutil.mavlink.MAV_PARAM_EXT_TYPE_REAL32, 'default': 0.0},
-                        "double": {'type':  mavutil.mavlink.MAV_PARAM_EXT_TYPE_REAL64, 'default': 0.0},
-                        "custom": {'type':  mavutil.mavlink.MAV_PARAM_EXT_TYPE_CUSTOM, 'default': None }
+                        "bool": {'type':    mavutil.mavlink.MAV_PARAM_EXT_TYPE_UINT8, 'default': 0, 'castfunc': int},
+                        "uint8": {'type':   mavutil.mavlink.MAV_PARAM_EXT_TYPE_UINT8, 'default': 0, 'castfunc': int},
+                        "int8": {'type':    mavutil.mavlink.MAV_PARAM_EXT_TYPE_INT8, 'default': 0, 'castfunc': int},
+                        "uint16": {'type':  mavutil.mavlink.MAV_PARAM_EXT_TYPE_UINT16, 'default': 0, 'castfunc': int},
+                        "int16": {'type':   mavutil.mavlink.MAV_PARAM_EXT_TYPE_INT16, 'default': 0, 'castfunc': int},
+                        "uint32": {'type':  mavutil.mavlink.MAV_PARAM_EXT_TYPE_UINT32, 'default': 0, 'castfunc': int},
+                        "int32": {'type':   mavutil.mavlink.MAV_PARAM_EXT_TYPE_INT32, 'default': 0, 'castfunc': int},
+                        "uint64": {'type':  mavutil.mavlink.MAV_PARAM_EXT_TYPE_UINT64, 'default': 0, 'castfunc': int},
+                        "int64": {'type':   mavutil.mavlink.MAV_PARAM_EXT_TYPE_INT64, 'default': 0, 'castfunc': int},
+                        "float": {'type':   mavutil.mavlink.MAV_PARAM_EXT_TYPE_REAL32, 'default': 0.0, 'castfunc': float},
+                        "double": {'type':  mavutil.mavlink.MAV_PARAM_EXT_TYPE_REAL64, 'default': 0.0, 'castfunc': float},
+                        "custom": {'type':  mavutil.mavlink.MAV_PARAM_EXT_TYPE_CUSTOM, 'default': None, 'castfunc': int }
                         }
 
     #version information
@@ -1463,7 +1523,7 @@ def main():
     else:
         source_component = opts.SOURCE_COMPONENT
 
-    mavl = MicaMavLink(opts.ip, opts.mav10, opts.mav20, opts.SOURCE_SYSTEM, source_component, opts.TARGET_SYSTEM, opts.TARGET_COMPONENT, opts.rtscts, opts.baudrate, descriptor, opts.stream_ip, opts.stream_port, camera_defs=opts.camera_defs_local, camera_url=opts.camera_defs_url, log_file=opts.log_file)
+    mavl = MicaMavLink(opts.ip, opts.mav10, opts.mav20, opts.SOURCE_SYSTEM, source_component, opts.TARGET_SYSTEM, opts.TARGET_COMPONENT, opts.rtscts, opts.baudrate, descriptor, opts.stream_ip, opts.stream_port, camera_defs=opts.camera_defs_local, camera_url=opts.camera_defs_url, log_file=opts.log_file, isMulticast = opts.multicast)
 
     #Main Loop
     while exit == False:
