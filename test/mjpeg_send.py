@@ -40,15 +40,16 @@ def http_get(ip, route):
                 pass
     return(rd)
 
-cmd_out = ['/Library/Frameworks/GStreamer.framework/Commands/gst-launch-1.0', '-v',
+#cmd_out = ['/Library/Frameworks/GStreamer.framework/Commands/gst-launch-1.0', '-v',
+cmd_out = ['gst-launch-1.0', '-v',
            'fdsrc',
            '!', 'jpegdec', #Need to decode jpeg
            '!', 'jpegenc', #and then re-encode for it to work?  Not sure why.
            '!', 'progressreport',
            '!', 'rtpjpegpay',
-           '!', 'udpsink', 'host=127.0.0.1', 'port=5000']
+           '!', 'udpsink', 'host=192.168.85.13', 'port=5600']
 pipe = sp.Popen(cmd_out, stdin=sp.PIPE)
-ip = "192.168.1.83"
+ip = "192.168.87.1"
 count = 120
 while count > 0:
     rd = http_post(ip, 'config', {'streaming_enable': True, 'streaming_allowed': True, 'preview_band': 'multi'})
