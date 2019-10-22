@@ -1,0 +1,11 @@
+[Unit]
+Description=RedEdgeMX Proxy Service
+After=network.target
+
+[Service]
+ExecStart=/usr/local/bin/micamavproxy.py --master=udpout:192.168.85.1:14552 --mav20 --dialect=ardupilotmega --ip 192.168.87.1 --stream_ip=192.168.85.13 --camera_defs_url="file://micasense_rededge_mx.xml" --camera_defs_local=micasense_rededge_mx.xml --log_file=log.out'
+Restart=on-failure
+RestartSec=5
+
+[Install]
+Alias=rededgemxproxy.service
