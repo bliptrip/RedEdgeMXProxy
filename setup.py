@@ -1,3 +1,5 @@
+#!/usr/bin/env python3
+
 from setuptools import setup
 import os, platform
 import sys
@@ -13,14 +15,14 @@ def package_files(directory):
             paths.append(os.path.join('..', path, filename))
     return paths
 
-package_data = ['RedEdgeMXProxy/*.xml']
+package_data = ['micasense_rededge_mx.xml']
 
 # note that we do not include all the real dependencies here (like matplotlib etc)
 # as that breaks the pip install. It seems that pip is not smart enough to
 # use the system versions of these dependencies, so it tries to download and install
 # large numbers of modules like numpy etc which may be already installed
 with open('RedEdgeMXProxy/requirements.txt', 'r') as req_fh:
-    requirements=[r.rstrip('\n') for r in req_fh.read_lines()]
+    requirements=[r.rstrip('\n') for r in req_fh.readlines()]
     req_fh.close()
 
 if sys.version_info < (3,6):
@@ -35,7 +37,7 @@ setup(name='RedEdgeMXProxy',
       commands and MavLink extended parameter settings to/from the MicaSense HTTPApi (http://micasense.github.io/rededge-api/api/http.html).
       By default the proxy forwards MavLink-protocol packets to/from a serial UART port on an autopilot (typically connected through
       an available telemetry/UART port on the autopilot FMU), and sends corresponding camera configuration requests over the MicaSense
-      HTTPApi (over wifi or ethernet).  More information can be found at https://github.com/bliptrip/RedEdgeMX.'''
+      HTTPApi (over wifi or ethernet).  More information can be found at https://github.com/bliptrip/RedEdgeMX.''',
       url='https://github.com/bliptrip/RedEdgeMX',
       author='Andrew Maule',
       author_email='developer@bliptrip.net',
@@ -45,7 +47,7 @@ setup(name='RedEdgeMXProxy',
         'Intended Audience :: Science/Research',
         'License :: OSI Approved :: GNU General Public License v3 (GPLv3)',
         'Operating System :: OS Independent',
-        'Programming Language :: Python :: 3.4+',
+        'Programming Language :: Python :: >=3.4',
         'Topic :: Scientific/Engineering'],
       license='GPLv3',
       packages=['RedEdgeMXProxy'],
