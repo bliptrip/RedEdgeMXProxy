@@ -1,4 +1,0 @@
-backports-datetime-fromisoformat
-future
-Pillow
-requests
